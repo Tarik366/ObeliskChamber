@@ -12,6 +12,14 @@ const nupMsg = (p) =>
     ? t(p.file ? 'setup.unpackingNupFile' : 'setup.unpackingNup', { pct: nupPct(p), file: p.file || '' })
     : t('setup.readingNup');
 
+let nxHandler = null;
+listen('nx-progress', (ev) => nxHandler && nxHandler(ev.payload));
+const nxPct = (p) => (p && p.total ? Math.min(100, Math.floor((100 * p.done) / p.total)) : 0);
+const nxMsg = (p) =>
+  p && p.total
+    ? t(p.file ? 'setup.unpackingNxFile' : 'setup.unpackingNx', { pct: nxPct(p), file: p.file || '' })
+    : t('setup.readingNx');
+
 const MAX_LOG = 600;
 
 /*
@@ -96,6 +104,8 @@ export async function render(el, ctx) {
   let log = [];
   let nupBusy = false;
   let nupProgress = null;
+  let nxBusy = false;
+  let nxProgress = null;
   const refresh = async () => {
     report = path && ov.repo_ok ? await api('validate_dump', { path }) : null;
     status = ov.repo_ok ? await api('setup_status') : null;
@@ -146,11 +156,14 @@ export async function render(el, ctx) {
           <div class="stack">
             <div class="row">
               <input type="text" id="path" spellcheck="false" placeholder="${esc(t('setup.pathPlaceholder'))}" value="${esc(path)}" />
-              <button class="btn" id="browse" ${nupBusy ? 'disabled' : ''}>${icon('folder-open')}${esc(t('common.browse'))}</button>
-              <button class="btn" id="browse-nup" ${nupBusy ? 'disabled' : ''}>${icon('file-archive')}${esc(t('setup.nup'))}</button>
+              <button class="btn" id="browse" ${nupBusy || nxBusy ? 'disabled' : ''}>${icon('folder-open')}${esc(t('common.browse'))}</button>
+              <button class="btn" id="browse-nup" ${nupBusy || nxBusy ? 'disabled' : ''}>${icon('file-archive')}${esc(t('setup.nup'))}</button>
+              <button class="btn" id="browse-nx" ${nupBusy || nxBusy ? 'disabled' : ''}>${icon('file-archive')}${esc(t('setup.nx'))}</button>
             </div>
             ${nupBusy ? `<p class="dim" id="nup-msg">${esc(nupMsg(nupProgress))}</p><progress max="100" value="${nupPct(nupProgress)}"></progress>` : ''}
+            ${nxBusy ? `<p class="dim" id="nx-msg">${esc(nxMsg(nxProgress))}</p><progress max="100" value="${nxPct(nxProgress)}"></progress>` : ''}
             <p class="faint">${esc(t('setup.nupHint'))}</p>
+            <p class="faint">${esc(t('setup.nxHint'))}</p>
             <p class="faint">${esc(t('setup.dumpHint'))}</p>
             ${status.package ? `<p class="faint">${esc(t('setup.packageComplete'))}</p>` : ''}
           </div>
@@ -207,6 +220,21 @@ export async function render(el, ctx) {
       nupBusy = false;
       draw();
     });
+    el.querySelector('#browse-nx').addEventListener('click', async () => {
+      const picked = await api('pick_nx', { start: null });
+      if (!picked) return;
+      nxBusy = true;
+      nxProgress = null;
+      draw();
+      try {
+        path = await api('import_nx', { path: picked });
+        report = await api('validate_dump', { path });
+      } catch (e) {
+        toast(errText(e), 'error');
+      }
+      nxBusy = false;
+      draw();
+    });
     el.querySelector('#use').addEventListener('click', async () => {
       try {
         await api('save_dump', { path });
@@ -228,6 +256,15 @@ export async function render(el, ctx) {
       msg.textContent = nupMsg(p);
       const bar = msg.nextElementSibling;
       if (bar) bar.value = nupPct(p);
+    }
+  };
+  nxHandler = (p) => {
+    nxProgress = p;
+    const msg = el.querySelector('#nx-msg');
+    if (msg) {
+      msg.textContent = nxMsg(p);
+      const bar = msg.nextElementSibling;
+      if (bar) bar.value = nxPct(p);
     }
   };
   ctx.onLog((lines) => {

@@ -8,6 +8,7 @@ mod dump;
 mod ini;
 mod locale;
 mod nup;
+mod nx;
 mod play;
 mod settings;
 mod setup;
@@ -224,6 +225,68 @@ async fn import_nup(app: AppHandle, state: State<'_, Arc<setup::Shared>>, path: 
                 if total == 0 || done == total || done - last >= total / 100 {
                     last = done;
                     let _ = emitter.emit("nup-progress", NupProgress { done, total, file: file.to_string() });
+                }
+            },
+            &|| false,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(dump::fwd(&res))
+}
+
+#[tauri::command]
+async fn pick_nx(app: AppHandle, start: Option<String>) -> Option<String> {
+    let mut dlg = app
+        .dialog()
+        .file()
+        .set_title("Choose your NXFormat (.nx) archive")
+        .add_filter("NXFormat package", &["nx"]);
+    if let Some(s) = start.filter(|s| PathBuf::from(s).is_dir()) {
+        dlg = dlg.set_directory(s);
+    }
+    dlg.blocking_pick_file()
+        .and_then(|p| p.into_path().ok())
+        .map(|p| dump::fwd(&p))
+}
+
+/// Extracts an .nx archive (NXFormat, https://github.com/fab918/nxformat) into `<repo>/game/nx_dump`
+/// (or `<game_dir>/nx_dump` in a release package) and returns that folder. Emits "nx-progress".
+/// A finished extraction of the same package is reused.
+#[tauri::command]
+async fn import_nx(
+    app: AppHandle,
+    state: State<'_, Arc<setup::Shared>>,
+    path: String,
+) -> Result<String, String> {
+    if state.progress.lock().unwrap().state == "running" {
+        return Err("Setup is running. Pause it first.".into());
+    }
+    let cfg = load_config(&app);
+    let repo = need_repo(&cfg)?;
+    let out = if package_tools().is_some() {
+        game_dir_of(&cfg, &repo).join("nx_dump")
+    } else {
+        repo.join("game").join("nx_dump")
+    };
+    let src = PathBuf::from(path.trim());
+    let emitter = app.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        let mut last = 0u64;
+        nx::extract(
+            &src,
+            &out,
+            &mut |done, total, file| {
+                if total == 0 || done == total || (total > 0 && done.saturating_sub(last) >= total / 100) {
+                    last = done;
+                    let _ = emitter.emit(
+                        "nx-progress",
+                        NupProgress {
+                            done,
+                            total,
+                            file: file.to_string(),
+                        },
+                    );
                 }
             },
             &|| false,
@@ -641,6 +704,8 @@ fn main() {
             pick_folder,
             pick_nup,
             import_nup,
+            pick_nx,
+            import_nx,
             validate_dump,
             save_dump,
             read_settings,

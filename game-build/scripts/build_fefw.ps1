@@ -28,5 +28,6 @@ $cfg += " -DFEFW_THINLTO=$lto -DFEFW_LTO_JOBS=`"$env:NX_LTO_JOBS`""
 $cfg += " -DFEFW_RT_FLAGS=`"$env:NX_RT_FLAGS`""
 if ($CMakeArgs) { $cfg += " $CMakeArgs" }
 $tgt = if ($Target -eq "fefw_obj") { "CMakeFiles/fefw.dir/src/fefw_main.cpp.obj" } else { $Target }
-cmd /c "call `"$env_cmd`" && $cfg && cmake --build `"$bd`" --target $tgt -j $Jobs"
+$build = "call `"$env_cmd`" && $cfg && cmake --build `"$bd`" --target $tgt -j $Jobs"
+& $env:ComSpec /d /s /c $build
 exit $LASTEXITCODE
