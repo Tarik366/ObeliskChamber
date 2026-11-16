@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Fire Emblem: Fortune's Weave: the recomp's settings as a screen of the game's own ([fefw] native_options, default on). "Recomp Options"
-// under + > System (fefw_sysmenu.cpp) opens a second copy of the game's Options screen whose rows and tabs are ours: Display, Graphics,
+// under + > System (ObeliskChamber_sysmenu.cpp) opens a second copy of the game's Options screen whose rows and tabs are ours: Display, Graphics,
 // Frame Rate, Audio. No lifted-code site is needed: everything goes through the game's vtables.
 //
 // The game's Options screen (main of update 131072; names after the community decompilation's, addresses are this build's):
@@ -37,7 +37,7 @@
 #include <string>
 #include <vector>
 
-#include "fefw_game.h"
+#include "ObeliskChamber_game.h"
 #include "nxrt/abi.h"
 #include "nxrt/audio_sink.h"
 #include "nxrt/config.h"
@@ -46,11 +46,13 @@
 #include "nxrt/log.h"
 #include "nxrt/memory.h"
 #include "nxrt/nvn_backend.h"
+#include "nxrt/mod_api.h"
 #include "nxrt/platform.h"
+#include "nxrt/services_api.h"
 #include "play_types.h"
 #include "play_ui.h"
 
-namespace nxrt::games::fefw {
+namespace nxrt::games::ObeliskChamber {
 namespace {
 constexpr const char* kTag = "fefw.optmenu";
 // functions
@@ -70,7 +72,7 @@ constexpr uint64_t kItemBytes = 0x90, kItemEntry = 0x58, kItemDecidable = 0x60, 
 
 uint64_t g_base = 0;
 bool g_on = true, g_ready = false, g_failed = false;
-// Two screens are made from the class: the options (g_mvt, g_ivt) and a pick list for the save slots (g_mvt2, g_ivt2: fefw_saveslot.cpp).
+// Two screens are made from the class: the options (g_mvt, g_ivt) and a pick list for the save slots (g_mvt2, g_ivt2: ObeliskChamber_saveslot.cpp).
 enum { kScreenNone, kScreenOptions, kScreenList };
 int g_pending = kScreenNone;         // our entry is inside the game's create call: the menu it builds is ours
 uint64_t g_mvt[2 + kMenuSlots] = {}, g_ivt[2 + kItemSlots] = {}, g_fvt[2 + kTabFnSlots] = {};
@@ -130,7 +132,7 @@ struct Row {
     int page;
     const char* label;
     const char* help;
-    // a fefw.ini key with fixed values
+    // a ObeliskChamber.ini key with fixed values
     const char* sec = nullptr;
     const char* key = nullptr;
     const char* def = nullptr;
@@ -257,7 +259,7 @@ void dynres_after() {
     nxrt::nvn::backend_dynres_set(std::atof(ini("nvn", "dynres_target", "0").c_str()), std::atof(ini("nvn", "dynres_min", "0.7").c_str()),
                                   std::atof(ini("nvn", "dynres_gain", "3").c_str()));
 }
-// Settings that used to need a restart (fefw_res.cpp, fefw_play.cpp, the upscaler): the new value is applied to the running game.
+// Settings that used to need a restart (ObeliskChamber_res.cpp, ObeliskChamber_play.cpp, the upscaler): the new value is applied to the running game.
 void scale_after() { res_live_apply(false); }
 void rebuild_after() { res_live_apply(true); }
 void dynres_switch_after() {
@@ -558,23 +560,92 @@ void list_value(::Ctx* c) {
     if (g_list.value) g_list.value(i, g_list_value, sizeof g_list_value);
     call(c, g_base + kSetText, {base, g_base + kStrTxt, ptr(g_list_value)});
 }
+// Left / right on a row (slots 40 / 39, as the Options rows' "previous / next value"): the owner changes the row's value and says so; the
+// value is drawn again and the row's arrow moves, as on an Options row. Without an owner's function: no value, no change.
+void list_side(::Ctx* c, int dir) {
+    const uint64_t item = c->x[0];
+    const int i = list_row(item);
+    if (i < 0 || !g_list.side || !(call(c, g_ivt2[2 + kISlotReady], {item}) & 1) || !g_list.side(c, i, dir)) {
+        c->x[0] = 0;
+        return;
+    }
+    call(c, g_ivt2[2 + kISlotRedraw], {item});
+    if (const uint64_t base = part_alive(item + kItemBase)) call(c, g_base + kArrow, {base, dir < 0 ? 1ull : 0ull});
+    c->x[0] = 1;
+}
+void list_next(::Ctx* c) { list_side(c, 1); }
+void list_prev(::Ctx* c) { list_side(c, -1); }
 // A prompt the row's pick opened (answer 12) is a process made after the list, under the same parent: while one is there, the list still
-// gets the buttons the prompt gets (B on the prompt also closed the list, seen on a PC). The list is the newest child of its parent
-// (process +0x20 = parent, +0x28 = newest child) exactly when nothing is over it. So from a pick that answered 12 the list ignores A and B
-// until a process over it was seen and is gone again (or none came within two seconds); the rows' update keeps watch every frame.
+// gets the buttons the prompt gets (B on the prompt also closed the list, seen on a PC). Processes: +0x20 = parent, +0x28 = newest child,
+// +0x38 = the sibling made before this one. So from a pick that answered 12 the list ignores A and B until the prompt was seen and is gone
+// again (or none came within two seconds); the rows' update keeps watch every frame.
+// The prompt is the newest process over the list when one is first seen, and "gone" means that process left its parent's children. Waiting
+// for nothing at all to be over the list is not enough: the game's Save entry makes a helper process next to its prompt (0x16da940), and
+// when the prompt is cancelled that helper can stay, which left the list deaf to A and B until it was opened again (seen on a PC).
 enum { kPromptNone, kPromptWaiting, kPromptSeen };
 int g_prompt = kPromptNone, g_prompt_ignored = 0;
+uint64_t g_prompt_proc = 0;      // the prompt's process (kPromptSeen)
+uint64_t g_list_menu = 0;        // the pick list's menu (build_ours)
+// A menu whose item answered 12 notes it (menu +0x160, the handler 0x17141e0) and reads no directions while that is set (its tick,
+// 0x1713fb8). The game clears it in the menu's resume (process slot 9, 0x1715cc0), which runs when a process made under the menu ends.
+// The prompts over the list are made under the + menu's root instead, so the list was never resumed: after a prompt the cursor no longer
+// moved (seen on a PC). The list is resumed here once its prompt is gone.
+constexpr uint64_t kMenuState = 0x160, kMenuHandle = 0x17141e0;
+// The game's own resume is called (it also puts the picked row back to its plain look: with the state alone cleared the row stayed
+// highlighted, seen on a PC); the state is cleared here too in case the resume declined.
+constexpr int kMSlotResume = 9;
+void list_resume(::Ctx* c, uint64_t menu) {
+    uint32_t state = 0;
+    if (!rd(menu + kMenuState, &state) || state != 12) return;
+    if (fn_lookup(g_mvt2[2 + kMSlotResume])) call(c, g_mvt2[2 + kMSlotResume], {menu});
+    if (rd(menu + kMenuState, &state) && state == 12) wr<uint32_t>(menu + kMenuState, 0);
+    static bool told = false;
+    if (!told) {
+        told = true;
+        NXLOG_I(kTag, "pick list: the prompt over the list is gone: the list reads the directions again");
+    }
+}
 std::chrono::steady_clock::time_point g_prompt_at;
-bool under_prompt(uint64_t item) {
+// The processes over the list: the menu's own newest child, else its parent's children made after it, newest first. Returns how many.
+int procs_over(uint64_t menu, uint64_t* out, int cap) {
+    uint64_t child = 0, parent = 0, p = 0;
+    int n = 0;
+    if (rd(menu + 0x28, &child) && child) {
+        out[n++] = child;
+        return n;
+    }
+    if (!rd(menu + 0x20, &parent) || !parent || !rd(parent + 0x28, &p)) return 0;
+    while (p && p != menu && n < cap) {
+        out[n++] = p;
+        if (!rd(p + 0x38, &p)) break;
+    }
+    return n;
+}
+bool under_prompt(::Ctx* c, uint64_t item) {
     if (g_prompt == kPromptNone) return false;
-    uint64_t menu = 0, parent = 0, newest = 0, child = 0;
+    uint64_t menu = 0, over[16] = {};
     if (!rd(item + 0x8, &menu) || !menu) return false;
-    const bool over = (rd(menu + 0x28, &child) && child) || (rd(menu + 0x20, &parent) && parent && rd(parent + 0x28, &newest) && newest && newest != menu);
+    const int n = procs_over(menu, over, 16);
     if (g_prompt == kPromptWaiting) {
-        if (over) g_prompt = kPromptSeen;
-        else if (std::chrono::steady_clock::now() - g_prompt_at > std::chrono::seconds(2)) g_prompt = kPromptNone;
-    } else if (!over) g_prompt = kPromptNone;
-    if (g_prompt == kPromptNone) g_prompt_ignored = 0;
+        if (n > 0) {
+            g_prompt = kPromptSeen;
+            g_prompt_proc = over[0];
+        } else if (std::chrono::steady_clock::now() - g_prompt_at > std::chrono::seconds(2)) {
+            g_prompt = kPromptNone;
+            list_resume(c, menu);
+        }
+    } else if (std::find(over, over + n, g_prompt_proc) == over + n) {
+        g_prompt = kPromptNone;
+        list_resume(c, menu);
+        if (n > 0) {
+            static bool told = false;
+            if (!told) {
+                told = true;
+                NXLOG_I(kTag, "pick list: the prompt is gone and %d other process(es) stay over the list: the list takes A and B again", n);
+            }
+        }
+    }
+    if (g_prompt == kPromptNone) g_prompt_ignored = 0, g_prompt_proc = 0;
     return g_prompt != kPromptNone;
 }
 void list_acall(::Ctx* c) {
@@ -584,7 +655,7 @@ void list_acall(::Ctx* c) {
         c->x[0] = 1;
         return;
     }
-    if (under_prompt(item)) {      // the A that answered a prompt over the list
+    if (under_prompt(c, item)) {      // the A that answered a prompt over the list
         c->x[0] = 0;
         return;
     }
@@ -604,7 +675,7 @@ void list_acall(::Ctx* c) {
 void list_bcall(::Ctx* c) {
     const uint64_t item = c->x[0];
     if (list_row(item) >= 0 && g_list.back) g_list.back();
-    if (list_row(item) >= 0 && under_prompt(item)) {
+    if (list_row(item) >= 0 && under_prompt(c, item)) {
         static bool told = false;
         if (!told) {
             told = true;
@@ -626,7 +697,7 @@ void list_update(::Ctx* c) {
     const uint64_t item = c->x[0];
     pass(c, g_ivt[2 + kISlotUpdate]);
     const int i = list_row(item);
-    if (i >= 0) under_prompt(item);
+    if (i >= 0) under_prompt(c, item);
     if (i < 0 || i >= kListMax || !g_list.dirty) return;
     static bool told = false;
     if (!told) {
@@ -706,7 +777,7 @@ bool row_shown(const Row& r) {
     return true;
 }
 
-// Every row back to its default. The rows over fefw.ini keys know theirs; the others are the play settings' own defaults.
+// Every row back to its default. The rows over ObeliskChamber.ini keys know theirs; the others are the play settings' own defaults.
 void reset_all() {
     int changed = 0;
     for (const Row& r : kRows) {
@@ -737,7 +808,7 @@ void reset_all() {
         s.audio.device = d.audio.device;
         s.audio.channels = d.audio.channels;
     });
-    NXLOG_I(kTag, "Recomp Options reset to the defaults (%d fefw.ini rows changed, the display, frame rate and audio settings put back)", changed);
+    NXLOG_I(kTag, "Recomp Options reset to the defaults (%d ObeliskChamber.ini rows changed, the display, frame rate and audio settings put back)", changed);
 }
 
 // "Yes" on the reset prompt. The prompt's choice (class vtable 0x20b0530) calls it from its A handler (0x167a880) as (this, &item) with
@@ -832,7 +903,7 @@ void build_ours(::Ctx* c, uint64_t menu, int screen) {
     if (!rd(g_base + kHeapGot, &heap_var) || !rd(heap_var, &heap) || !heap) return;
     const bool list = screen == kScreenList;
     const int rows = list ? std::clamp(g_list.count, 0, kListMax) : kRowCount;
-    if (list) g_prompt = kPromptNone;
+    if (list) g_prompt = kPromptNone, g_list_menu = menu;
     if (list) std::fill(std::begin(g_list_seen), std::end(g_list_seen), g_list_gen);
     else
         for (int i = 0; i < kRowCount; ++i) g_entries[i].page = row_shown(kRows[i]) ? static_cast<uint8_t>(kRows[i].page) : 0xff;   // 0xff: on no tab
@@ -881,6 +952,9 @@ bool slot_is(uint64_t vt, int slot, uint64_t fn) {
 }
 }  // namespace
 
+namespace {
+int mod_open_list(::Ctx* c, uint64_t item, const ::NxModList* list);   // below: the pick list for code mods
+}
 void optmenu_install(uint64_t base) {
     g_base = base;
     g_on = config_get_bool("fefw", "native_options", true);
@@ -966,8 +1040,9 @@ void optmenu_frame() {
         g_yvt[2 + kFSlotCloneNew] = hle_register("fefw.optmenu.reset_yes_clone_new", reset_yes_clone_new);
         g_yvt[2 + kFSlotCloneAt] = hle_register("fefw.optmenu.reset_yes_clone_at", reset_yes_clone_at);
     } else NXLOG_W(kTag, "the Options screen's reset prompt is not where it was expected: minus does nothing on Recomp Options");
-    g_ivt2[2 + kISlotNext] = g_base + kBaseNext;
-    g_ivt2[2 + kISlotPrev] = g_base + kBasePrev;
+    g_ivt2[2 + kISlotNext] = hle_register("fefw.optmenu.list_next", list_next);
+    g_ivt2[2 + kISlotPrev] = hle_register("fefw.optmenu.list_prev", list_prev);
+    services::modapi::set_list_opener(mod_open_list);
     const uint64_t slot = g_base + kVtMenu + kMSlotBuild * 8;
     mem::protect(slot & ~0xfffull, 0x1000, mem::Prot::RW);
     wr<uint64_t>(slot, hle_register("fefw.optmenu.build", menu_build));
@@ -1002,4 +1077,41 @@ bool optmenu_open_list(::Ctx* c, uint64_t item, const OptList& list) {
     g_pending = kScreenNone;
     return built;
 }
-}  // namespace nxrt::games::fefw
+// The same list for a code mod (nxrt/mod_api.h version 4, open_list): the mod's list is kept and its functions are reached through ours.
+namespace {
+::NxModList g_mod_list{};
+int mod_page(int row) { return g_mod_list.page ? g_mod_list.page(row, g_mod_list.user) : 0; }
+void mod_label(int row, char* out, size_t n) { if (g_mod_list.label) g_mod_list.label(row, out, n, g_mod_list.user); }
+void mod_value(int row, char* out, size_t n) { if (g_mod_list.value) g_mod_list.value(row, out, n, g_mod_list.user); }
+void mod_help(int row, char* out, size_t n) { if (g_mod_list.help) g_mod_list.help(row, out, n, g_mod_list.user); }
+uint32_t mod_pick(::Ctx* c, int row) { return g_mod_list.pick ? g_mod_list.pick(c, row, g_mod_list.user) : kClose; }
+void mod_back() { if (g_mod_list.back) g_mod_list.back(g_mod_list.user); }
+int mod_side(::Ctx* c, int row, int dir) { return g_mod_list.side ? g_mod_list.side(c, row, dir, g_mod_list.user) : 0; }
+int mod_open_list(::Ctx* c, uint64_t item, const ::NxModList* list) {
+    if (!list || list->size < sizeof(::NxModList)) return 0;
+    g_mod_list = *list;
+    OptList l;
+    l.pages = std::clamp(list->pages, 1, kListPages);
+    for (int i = 0; i < kListPages; ++i) l.titles[i] = list->titles[i];
+    l.count = list->count;
+    l.page = list->page ? mod_page : nullptr;
+    l.label = mod_label;
+    l.value = mod_value;
+    l.help = mod_help;
+    l.pick = mod_pick;
+    l.back = mod_back;
+    l.side = mod_side;
+    return optmenu_open_list(c, item, l) ? 1 : 0;
+}
+}  // namespace
+// The pick list closes as B on a row closes it (the menu's handler with the answer 3), when it is open. For a pick whose prompt decided
+// something the list must not stay over.
+void optmenu_close_list(::Ctx* c) {
+    uint64_t vt = 0;
+    const uint64_t menu = g_list_menu;
+    if (!g_ready || !menu || !rd(menu, &vt) || vt != ptr(&g_mvt2[2]) || !fn_lookup(g_base + kMenuHandle)) return;
+    g_prompt = kPromptNone;
+    g_list_menu = 0;
+    call(c, g_base + kMenuHandle, {menu, kClose});
+}
+}  // namespace nxrt::games::ObeliskChamber

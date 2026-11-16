@@ -14,6 +14,18 @@
 // the chain stops at the first one that returns nonzero. A site with no hook registered does nothing (inline: nothing; entry and
 // midhook: continue with the lifted function). Registration and removal are safe while guest threads run: lookups never lock and see
 // either the old or the new table. A hook may add or remove hooks, including its own site's: the change is seen by the next call.
+//
+// Condition flags at a site. The lifted code keeps NZCV in a local of each function (NxFlags fl, nxrecomp/program.py), not in the
+// Ctx, so inside any hook c->N, c->Z, c->C and c->V are NOT the function's current flags (they hold whatever was last stored, which
+// can be from another function), and a hook that writes them changes nothing the function sees. Hooks must not read or set flags.
+// Where this matters for choosing a site:
+//   - inline hooks, and midhooks that return 0 (continue): the function goes on with its own, correct flags. Any site is fine.
+//   - midhooks that return nonzero (handled) and do not run the rest of the function: like a return, flags do not matter.
+//   - midhooks that run the rest of the function themselves (call_guest(c, site), the f_<site> the lifter makes for a midhook):
+//     that copy starts with the Ctx's stale flags. Pick a site where the flags are set again before anything reads them, e.g.
+//     right after a call (bl / blr: the ABI does not keep flags across a call) or at a flag-setting instruction (cmp, tst, subs,
+//     adds, ands, fcmp; not ccmp / fccmp, which read them). Not between a compare and the b.cond / csel / cset / ccmp that uses it.
+// This port's own midhook (0x7101904c20, ObeliskChamber_wide.cpp) sits before a tail call and returns handled, so it is safe either way.
 #pragma once
 #include <cstddef>
 #include <cstdint>

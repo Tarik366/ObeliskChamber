@@ -10,12 +10,12 @@
 // Every change is applied at once and saved at once:
 //   controls.ini (play mode's settings: window, vsync, frame limit, counter, audio, pad, HDR, picture) goes through UiHost::apply, which the
 //   main thread applies at its next frame and writes back (play_config.cpp keeps the file's comments and unknown keys, nxrt::ini_merge);
-//   fefw.ini (the game's [fefw] [dlss] [media] ... keys) is written with nxrt::config_write, which changes the value in place and keeps the
+//   ObeliskChamber.ini (the game's [fefw] [dlss] [media] ... keys) is written with nxrt::config_write, which changes the value in place and keeps the
 //   rest of the file as it is.
 // What the runtime can change while running is live. What is read once at start (the game picks its render config once, the upscaler and
 // frame generation are set up once, the frame-rate hooks are installed at start) says "restart", and the row shows the value in force until
 // then; nothing pretends to be live. A key set by an environment variable (NXRT_...) wins over the file: the row says so and is locked.
-#include "fefw_game.h"
+#include "ObeliskChamber_game.h"
 
 #include <algorithm>
 #include <array>
@@ -59,7 +59,7 @@ namespace nxrt::nvn::be {
 const char* dlss_upscaler_in_use();   // nvn/api_dlss_replay.cpp
 }
 
-namespace nxrt::games::fefw {
+namespace nxrt::games::ObeliskChamber {
 
 namespace {
 
@@ -78,7 +78,7 @@ const ImVec4 kAccent(0.42f, 0.78f, 0.96f, 1.0f);
 enum Tab { kTabDisplay, kTabGraphics, kTabFrameRate, kTabAudio, kTabControls, kTabGame, kTabDebug, kTabCount };
 constexpr const char* kTabNames[kTabCount] = {"Display", "Graphics", "Frame rate", "Audio", "Controls", "Game", "Debug"};
 
-// ---- the fefw.ini keys the menu edits -------------------------------------------------------------------------------------------------
+// ---- the ObeliskChamber.ini keys the menu edits -------------------------------------------------------------------------------------------------
 // The value read at start is kept (boot) so a restart-only row can show what is in force and the bottom bar can list what waits.
 enum class Norm { Text, Bool, Number };
 struct IniKey {
@@ -210,14 +210,16 @@ void apply(UiHost& host, Menu& m) { host.apply(m.edit); }
 // ---- widgets: a two-column table of rows, label left, the control right ----------------------------------------------------------------
 enum class When { Live, Restart, Info };
 
-bool pressed(ImGuiKey a, ImGuiKey b, ImGuiKey c) { return ImGui::IsKeyPressed(a, true) || ImGui::IsKeyPressed(b, true) || ImGui::IsKeyPressed(c, true); }
+// ImGui reads a key's state at io.KeysData[key - ImGuiKey_NamedKey_BEGIN] without a range check (asserts are off in this build), so
+// ImGuiKey_None must never reach IsKeyPressed: it read 8 KiB before the ImGui context, and crashed when that page was not mapped.
+bool pressed(ImGuiKey a, ImGuiKey b) { return ImGui::IsKeyPressed(a, true) || ImGui::IsKeyPressed(b, true); }
 
 // Left / right on the focused, not held, row: -1 / +1, and the cursor stays where it is.
 int step_dir() {
     if (!ImGui::IsItemFocused() || ImGui::IsItemActive()) return 0;
     int d = 0;
-    if (pressed(ImGuiKey_GamepadDpadLeft, ImGuiKey_LeftArrow, ImGuiKey_None)) d = -1;
-    else if (pressed(ImGuiKey_GamepadDpadRight, ImGuiKey_RightArrow, ImGuiKey_None)) d = 1;
+    if (pressed(ImGuiKey_GamepadDpadLeft, ImGuiKey_LeftArrow)) d = -1;
+    else if (pressed(ImGuiKey_GamepadDpadRight, ImGuiKey_RightArrow)) d = 1;
     if (d) ImGui::NavMoveRequestCancel();
     return d;
 }
@@ -356,7 +358,7 @@ bool button(Menu& m, const char* label) {
     return b;
 }
 
-// A fefw.ini list row: the entries' values in `vals`, the label of the running value when it is pending.
+// A ObeliskChamber.ini list row: the entries' values in `vals`, the label of the running value when it is pending.
 void ini_combo_row(Menu& m, const IniKey& k, const char* label, const char* help, const char* const* names, const char* const* vals, int n,
                    const char* other = "Custom (set in the ini)") {
     row(m, label, k.restart ? When::Restart : When::Live, help);
@@ -512,7 +514,7 @@ constexpr const char* kFgVals[] = {"0", "dlss", "fsr3"};
 constexpr const char* kHdrModeNames[] = {"Off", "Auto", "On", "Native"};
 constexpr const char* kHdrFormatNames[] = {"Auto", "HDR10", "scRGB"};
 
-// The output size an [fefw] output value means (0 x 0: the config's own), as fefw_res.cpp works it out: a window is fitted to 16:9 unless
+// The output size an [fefw] output value means (0 x 0: the config's own), as ObeliskChamber_res.cpp works it out: a window is fitted to 16:9 unless
 // it is wider and ultrawide is on; with ultrawide on a narrower size gets 16:9 inside it.
 void output_size(const std::string& v, bool wide, int* w, int* h) {
     *w = *h = 0;
@@ -663,7 +665,7 @@ void upscaler_group(Menu& m) {
             ini_combo_row(m, sk, "Scene shading rate",
                           "Shades the 3D scene's surfaces once per 2 or 4 pixels instead of every pixel; edges, the UI, post effects and shadows "
                           "stay at full resolution. Faster on a GPU-limited picture, with slightly softer surface detail. Changes apply at once, "
-                          "but the first time (fefw.ini had no [nvn] shading_rate line when the game started) needs a restart, and the first "
+                          "but the first time (ObeliskChamber.ini had no [nvn] shading_rate line when the game started) needs a restart, and the first "
                           "run after that rebuilds the shader pipelines.",
                           std::array<const char*, 4>{"Off (every pixel)", "2x1 (half, horizontal)", "1x2 (half, vertical)", "2x2 (quarter)"}.data(),
                           std::array<const char*, 4>{"off", "scene:2x1", "scene:1x2", "scene:2x2"}.data(), 4, "Custom rules (set in the ini)");
@@ -963,9 +965,9 @@ void audio_page(UiHost& host, Menu& m) {
         row(m, "Master volume", When::Live, "Everything the game plays.");
         double pct = a.volume * 100.0;
         bool drag = false;
-        const bool commit = slider(m, "##vol", &pct, 0, 100, 5, "%.0f%%", &drag);
+        const bool commit = slider(m, "##vol", &pct, 0, 200, 5, "%.0f%%", &drag);   // 0 to audio::kMaxVolume (200%), as the Recomp Options screen
         if (drag || commit) {
-            a.volume = std::clamp(pct / 100.0, 0.0, 1.0);
+            a.volume = std::clamp(pct / 100.0, 0.0, 2.0);
             audio::set_master_volume(static_cast<float>(a.volume));   // heard while dragged
         }
         if (commit) apply(host, m);
@@ -1209,7 +1211,7 @@ void controls_page(UiHost& host, Menu& m, const play::LiveStatus& live) {
 }
 
 // ---- Game -------------------------------------------------------------------------------------------------------------------------------
-// The languages the game ships (games/fefw/fefw_data.cpp), by the names the settings service reads (services/common.cpp). "" is Automatic.
+// The languages the game ships (games/ObeliskChamber/ObeliskChamber_data.cpp), by the names the settings service reads (services/common.cpp). "" is Automatic.
 // ImGui's font has no CJK glyphs, so the names are English.
 constexpr const char* kLangNames[] = {"Automatic (Windows language)", "English (US)",   "English (UK)",           "Japanese",
                                       "French",                       "French (Canada)", "German",                 "Italian",
@@ -1224,7 +1226,7 @@ void game_page(UiHost& host, Menu& m) {
     if (begin_rows("lang")) {
         row(m, "Game language", When::Restart,
             "The language of the game's text and voices. Automatic uses your Windows display language when the game has it, else English. "
-            "It applies the next time the game starts. [tweaks] language in controls.ini; [system] language in fefw.ini wins over it.");
+            "It applies the next time the game starts. [tweaks] language in controls.ini; [system] language in ObeliskChamber.ini wins over it.");
         std::string& lang = m.edit.fastboot.language;
         int sel = -1;
         for (int i = 0; i < kLangCount; ++i) {
@@ -1575,4 +1577,4 @@ void settings_menu(play::UiHost& host, gfx::Overlay& ov) {
     }
 }
 
-}  // namespace nxrt::games::fefw
+}  // namespace nxrt::games::ObeliskChamber

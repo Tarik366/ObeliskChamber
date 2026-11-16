@@ -421,6 +421,12 @@ void find_mods(const std::filesystem::path& dir, const std::string& name, int de
         m.dir = u8str(dir);
         m.has_romfs = romfs;
         m.has_exefs = exefs;
+        if (exefs) {
+            for (const stdfs::directory_entry& e : stdfs::directory_iterator(dir / "exefs", ec)) {
+                const std::wstring ext = e.path().extension().wstring();
+                if (e.is_regular_file(ec) && (_wcsicmp(ext.c_str(), L".ips") == 0 || _wcsicmp(ext.c_str(), L".pchtxt") == 0)) m.exefs_patches = true;
+            }
+        }
         read_mod_state(dir, &m.romfs_on, &m.exefs_on);
         out.push_back(std::move(m));
         return;

@@ -135,6 +135,7 @@ struct ModInfo {
     std::string dir;     // the mod's host folder (UTF-8)
     bool has_romfs = false, has_exefs = false;
     bool romfs_on = true, exefs_on = true;
+    bool exefs_patches = false;   // exefs/ holds .ips / .pchtxt patches (applied by Set up, not at start)
 };
 std::vector<ModInfo> mods_list();
 bool mods_set(const std::string& dir, bool romfs_on, bool exefs_on, std::string* err);

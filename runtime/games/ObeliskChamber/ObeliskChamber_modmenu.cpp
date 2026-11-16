@@ -3,27 +3,29 @@
 //
 // The title's eShop entry (class vtable 0x20c46d8 in main of update 131072: GetMid 0x16d7320 = "MID_Title_eShop", ACall 0x16d7330 = a
 // prompt, then the shop applet, which a PC has none of) reads "DLC / Mods" and opens a list of the mods folder made from the game's own
-// Options screen class (fefw_optmenu.cpp's pick list), on two tabs:
+// Options screen class (ObeliskChamber_optmenu.cpp's pick list), on two tabs:
 //   RomFS  the mods that have romfs/ (files laid over the game's)
 //   ExeFS  the mods that have exefs/ (code: this port's DLLs, and the .ips / .pchtxt patches Set up builds in)
 // A row is a mod, named by its folder; its value is On or Off and A flips it. The switch is the mod's own mod.ini
 // (services::mods_set: "romfs = on|off", "exefs = on|off"), read where mods are used: the RomFS overlay and the DLL loader at the next
-// start, Set up's exefs patches at the next Set up.
+// start, Set up's exefs patches at the next Set up. A mod's hook sites (exefs/*.sites) are built in by Set up whether the mod is on or off,
+// so switching it needs no Set up; a mod whose sites this build lacks (installed or updated since the last Set up) says "needs Set up".
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
-#include "fefw_game.h"
+#include "ObeliskChamber_game.h"
 #include "nxrt/abi.h"
 #include "nxrt/config.h"
 #include "nxrt/dispatch.h"
 #include "nxrt/log.h"
 #include "nxrt/memory.h"
 #include "nxrt/services.h"
+#include "nxrt/services_api.h"
 
-namespace nxrt::games::fefw {
+namespace nxrt::games::ObeliskChamber {
 namespace {
 constexpr const char* kTag = "fefw.modmenu";
 constexpr uint64_t kVtShop = 0x20c46d8, kGetText = 0x1718dc0, kShopA = 0x16d7330;
@@ -38,6 +40,7 @@ bool g_on = true, g_hooked = false, g_failed = false;
 struct Row {
     int mod = -1;        // index into g_mods, -1: the "no mods" row
     bool exefs = false;
+    int sites_missing = 0;   // ExeFS rows: the mod's hook sites this build lacks (services::modapi::sites_missing; -1 unknown)
 };
 std::vector<services::ModInfo> g_mods;
 std::vector<Row> g_rows;
@@ -69,14 +72,20 @@ void row_value(int i, char* out, size_t n) {
     const Row* r = row(i);
     if (!r || r->mod < 0) return;
     const services::ModInfo& m = g_mods[static_cast<size_t>(r->mod)];
-    std::snprintf(out, n, "%s", (r->exefs ? m.exefs_on : m.romfs_on) ? "On" : "Off");
+    const bool on = r->exefs ? m.exefs_on : m.romfs_on;
+    if (r->exefs && r->sites_missing > 0) std::snprintf(out, n, "%s - needs Set up", on ? "On" : "Off");
+    else std::snprintf(out, n, "%s", on ? "On" : "Off");
 }
 void row_help(int i, char* out, size_t n) {
     const Row* r = row(i);
     if (!r) return;
     if (r->mod < 0 && r->exefs) std::snprintf(out, n, "Code mods go in mods/<name>/exefs: DLLs made for this port, or .ips / .pchtxt patches.");
     else if (r->mod < 0) std::snprintf(out, n, "File mods go in mods/<name>/romfs, next to the game.");
-    else if (r->exefs) std::snprintf(out, n, "A: on / off. DLLs change at the next start; .ips and .pchtxt patches at the next Set up.");
+    else if (r->exefs && r->sites_missing > 0)
+        std::snprintf(out, n, "This build lacks the mod's hook sites: run Set up on the Play page, or its code will not work.");
+    else if (r->exefs && g_mods[static_cast<size_t>(r->mod)].exefs_patches)
+        std::snprintf(out, n, "A: on / off. Its .ips / .pchtxt patches need Set up to change; DLLs change at the next start.");
+    else if (r->exefs) std::snprintf(out, n, "A: on / off. Applies at the next start.");
     else std::snprintf(out, n, "A: on / off. The mod's files replace the game's. Applies at the next start.");
 }
 uint32_t row_pick(::Ctx*, int i) {
@@ -104,7 +113,8 @@ void shop_acall(::Ctx* c) {
     for (int pass = 0; pass < 2; ++pass) {
         const size_t before = g_rows.size();
         for (size_t i = 0; i < g_mods.size(); ++i)
-            if (pass == 0 ? g_mods[i].has_romfs : g_mods[i].has_exefs) g_rows.push_back({static_cast<int>(i), pass == 1});
+            if (pass == 0 ? g_mods[i].has_romfs : g_mods[i].has_exefs)
+                g_rows.push_back({static_cast<int>(i), pass == 1, pass == 1 ? services::modapi::sites_missing(g_mods[i].dir) : 0});
         if (g_rows.size() == before) g_rows.push_back({-1, pass == 1});
     }
     OptList list;
@@ -153,4 +163,4 @@ void modmenu_frame() {
     g_hooked = true;
     NXLOG_I(kTag, "the title's DLC entry opens the mod menu ([fefw] mod_menu)");
 }
-}  // namespace nxrt::games::fefw
+}  // namespace nxrt::games::ObeliskChamber

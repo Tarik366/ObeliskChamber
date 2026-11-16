@@ -4,6 +4,10 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <vector>
+
+struct Ctx;          // the lifted code's register state (nxrecomp/ctx.h)
+struct NxModList;    // nxrt/mod_api.h
 
 namespace nxrt::services {
 
@@ -60,6 +64,28 @@ namespace modapi {
 // Loads the exefs/*.dll of the installed mods and calls their nxmod_init (once; later calls do nothing). base = main's guest address,
 // frame_update = the game's frame boundary relative to base (GamePlay::frame_update; 0 = no frame calls). Play mode start, main thread.
 void load_dll_mods(uint64_t base, uint64_t frame_update);
+// The file edits code mods registered (edit_file), for the RomFS image as it is built (fs.cpp). wants: some mod edits this image path
+// ("/GameData/Job.bin"). edit: runs the editors on the file's bytes; true when one of them replaced them. The first call of either
+// closes registration: edit_file answers 0 afterwards.
+// zstd for the mods (zstd_decompress / zstd_compress of the interface): the library is linked with the graphics half, which hands its
+// functions over before load_dll_mods. Signatures as in nxrt/mod_api.h. Without them the two interface functions answer -1.
+struct ModCodec {
+    int64_t (*zstd_decompress)(const void* src, uint64_t src_size, void* dst, uint64_t cap) = nullptr;
+    int64_t (*zstd_compress)(const void* src, uint64_t src_size, void* dst, uint64_t cap, int level) = nullptr;
+};
+void set_codec(const ModCodec& c);
+// The list screen of the interface's version 4 (open_list): the game module that has one hands its opener over when it is installed.
+// Without one open_list answers 0.
+using ListOpener = int (*)(::Ctx* c, uint64_t item, const ::NxModList* list);
+void set_list_opener(ListOpener fn);
+int open_list(::Ctx* c, uint64_t item, const ::NxModList* list);   // what the interface's open_list calls
+bool file_edit_wanted(const std::string& image_path);
+// Hook sites (a mod's exefs/*.sites, built in by Set up): how many sites the mod in mod_dir lists for this game build that the running
+// ObeliskChamber.exe was not lifted with (0 = all there); -1 when the build's own list (<exe>.sites) is unknown. Any thread.
+int sites_missing(const std::string& mod_dir);
+// What the overlay shows on screen at start about code mods (installed mods whose sites are missing): lines, "" for nothing.
+std::string notice();
+bool file_edit_run(const std::string& image_path, std::vector<uint8_t>& data);
 }  // namespace modapi
 
 // ---- acc (acc.cpp) ----------------------------------------------------------------------------------------------------------------

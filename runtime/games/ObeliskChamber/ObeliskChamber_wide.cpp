@@ -14,9 +14,12 @@
 //                the view gets wider at the same vertical field of view.
 //   UI           the 2D draw info's projection setter (0x5769d0) copies the layout's 4x4 at x0 + 0x10; a 1920x1080 ortho (1/960, +-1/540,
 //                no x translation, w 1) gets 1/(960k): the layout covers the centred 16:9 part of the output, the 3D picture the rest.
-//   backdrops    a picture or window that spans the whole 1920 layout width (dims, menu backdrops) gets x * k in the model-view its
-//                Calculate (0x595740, 0x5af080) puts in its constant buffer, so it still covers the output; a full-height one on one edge
-//                (side gradients) is stretched to the output's edge there. Children and text keep theirs. (Not in Kompas9's patch.)
+//   backdrops    a picture that spans the whole 1920 layout width (dims, menu backdrops, header bars) gets x * k in the model-view its
+//                Calculate (0x595740) puts in its constant buffer, so it still covers the output; a full-height one on one edge (side
+//                gradients) is stretched to the output's edge there. Children and text keep theirs. Not widened: Window panes (framed
+//                panels: quest windows, the world map's frame) and two pictures that are content, not backdrop: the world map's image
+//                (Img00, 1480x1080 on the right edge) and the Stats / roster screen's frame (a 1920x1080 Bg directly under the layout's
+//                root, its frame painted into the texture). (Not in Kompas9's patch.)
 //   scissor      the scissor pane (0x5975a0) works out its rectangle in viewport pixels from the layout size, not the matrix: when the
 //                draw info's x scale is ours the left edge and width are scaled by 1/k about the viewport's centre.
 //   markers      world-to-screen into 1920x1080 UI units (x * 960 + 960) at 13 sites: x * k, as the camera is k times wider. The
@@ -26,11 +29,13 @@
 //                console); the scissor is put back to the whole target at its end.
 //   stat chart   the unit screen's radar polygons (0x17d8e80) are built by the game from the layout's Locator panes in 1920x1080 layout pixels
 //                and drawn in its own 2D primitive buffer over the whole output, not through a pane: their x gets 960 + (x - 960) / k.
+//   map routes   the world / quest map's location dots (0x16bb860) and route lines (0x16bd660) are pushed into the same buffer in
+//                1920x1080 layout pixels: every vertex a batch pushed gets the same x at the batch's end, so they stay on the map picture.
 //   movies       the movie draw (0x1904aa0) clears the target to opaque black and draws into the centred 16:9 viewport; a midhook in
 //                front of its tail-called draw draws, puts the viewport back to the whole target and returns.
-// Outputs narrower than 16:9 are not widened: fefw_res.cpp fits the output to 16:9 inside them and the window letterboxes it. Wider than
-// 3840 (the game's window textures; 5120x1440) fefw_res.cpp keeps the shape at 3840 wide and the window scales it up.
-#include "fefw_game.h"
+// Outputs narrower than 16:9 are not widened: ObeliskChamber_res.cpp fits the output to 16:9 inside them and the window letterboxes it. Wider than
+// 3840 (the game's window textures; 5120x1440) ObeliskChamber_res.cpp keeps the shape at 3840 wide and the window scales it up.
+#include "ObeliskChamber_game.h"
 
 #include <algorithm>
 #include <atomic>
@@ -48,7 +53,7 @@
 #include "nxrt/log.h"
 #include "nxrt/memory.h"
 
-namespace nxrt::games::fefw {
+namespace nxrt::games::ObeliskChamber {
 
 namespace {
 
@@ -60,11 +65,13 @@ constexpr uint64_t kCamType = 0xc;                // u32: 0 = the perspective ca
 constexpr uint64_t kCamAspect = 0x70;             // f32 x2: aspect numerator, denominator (16, 9)
 constexpr uint64_t kProjSet = 0x576a10;           // `ret` of 0x5769d0: x0 + 0x10 = the 4x4 just copied (row major)
 constexpr uint64_t kPictureCalc = 0x595784;       // nn::ui2d Picture::Calculate (0x595740) after its LoadMtx: x19 = the pane, x20 = the draw info
-constexpr uint64_t kWindowCalc = 0x5af0b8;        // nn::ui2d Window::Calculate (0x5af080) after its LoadMtx: x20 = the pane, x19 = the draw info
+[[maybe_unused]] constexpr uint64_t kWindowCalc = 0x5af0b8;        // nn::ui2d Window::Calculate (0x5af080) after its LoadMtx: x20 = the pane, x19 = the draw info
 constexpr uint64_t kDrawModelView = 0x80;         // in the draw info: 3x4, the model-view of the pane being calculated
 constexpr uint64_t kPaneSize = 0x50;              // f32 w, h
 constexpr uint64_t kPaneBase = 0x5b;              // u8: base position, bits 0-1 horizontal (0 centre, 1 left, 2 right)
 constexpr uint64_t kPaneGlbMtx = 0x70;            // 3x4 row major
+constexpr uint64_t kPaneParent = 0x18;            // nn::ui2d::Pane*: the parent (null at the root)
+constexpr uint64_t kPaneName = 0xb0;              // char[24 + 1] (0x56fd88 compares it with "RootPane" while walking up through +0x18)
 constexpr uint64_t kScissor = 0x5976d4;           // in 0x5975a0: s3 viewport x, s2 viewport w, s5 left edge, s7 width; x1 = draw info
 constexpr uint64_t kMarkersS1[] = {0xb81bfc, 0xd939cc, 0xd943c4, 0xd94528, 0xd94670, 0xd947b8, 0xd94900, 0xd94a44,
                                    0xd94b88, 0xd94ccc, 0x1912700, 0x19131ec};   // `fmadd s1, s1, s2, s2` (s2 = 960)
@@ -75,6 +82,18 @@ constexpr uint64_t kFxScissor1 = 0xb76bb0;        // `blr x8`: SetScissor(x0 = c
 constexpr uint64_t kFxScissor2 = 0xb76cfc;
 constexpr uint64_t kFxEnd = 0xb76d9c;             // the epilogue
 constexpr uint64_t kStatGraph = 0x17d90b0;        // in 0x17d8e80 (the stat radar chart): after the 8 ring vertices are computed; sp + 0x20 = 8 x (x, y), sp + 0x10 = centre x
+// world / quest map: the dots batch (0x16bb860) and the route lines batch (0x16bd660), each between the renderer's batch start (0x19ca6c0)
+// and batch end (0x19ca3e0); the vertex pushes are inlined in between and the only calls are renderer state setters and vector growth
+constexpr uint64_t kDotsStart = 0x16bbe98;        // `ldr x0, [x0]`: [x0] = the 2D renderer, before its batch start
+constexpr uint64_t kDotsEnd = 0x16bcef8;          // the epilogue, after every batch of the function has ended
+constexpr uint64_t kLinesStart = 0x16bd704;       // `str wzr, [x8, x9]`: x0 = the 2D renderer, before its batch start
+constexpr uint64_t kLinesEnd = 0x16bdfbc;         // where every path out of the vertex loop meets, before the tail-called batch end
+// the 2D renderer's primitive buffer: vertices of 40 bytes (x, y f32 at +0, in 1920x1080 layout pixels), a push takes index count + 1
+// and writes the vertex only while count <= 0x3fffe
+constexpr uint64_t kPrimVerts = 0x4ac0;           // vertex array pointer
+constexpr uint64_t kPrimCount = 0x4b00;           // s32: the last index pushed
+constexpr uint32_t kPrimMaxIndex = 0x3ffff;
+constexpr uint64_t kPrimStride = 40;
 constexpr uint64_t kMovieTarget = 0x1904b5c;      // in 0x1904aa0, after the target is set: [x19] = command wrapper, x20 + 0x10 = s32 w, h
 constexpr uint64_t kMovieDraw = 0x1904c20;        // midhook: the draw is tail-called next (vtable + 0x110 with 3, 0)
 
@@ -88,10 +107,11 @@ constexpr uint32_t kInv960 = 0x3a888889;          // 1/960: a 1920 wide ortho
 constexpr uint32_t kInv540 = 0x3af2b9d6;          // 1/540: 1080 high
 constexpr uint32_t kOne = 0x3f800000;
 
-enum Counter { kCCamera, kCUi, kCBackdrop, kCScissor, kCMarker, kCEdge, kCFxOrtho, kCFxScissor, kCMovie, kCStatGraph, kCCount };
+enum Counter { kCCamera, kCUi, kCBackdrop, kCScissor, kCMarker, kCEdge, kCFxOrtho, kCFxScissor, kCMovie, kCStatGraph, kCMapRoutes, kCCount };
 constexpr const char* kCounterNames[kCCount] = {"camera",     "UI projection", "full-width pane",   "list scissor", "world marker",
-                                               "off-screen marker", "2D effect", "2D effect scissor", "movie", "stat chart"};
-static_assert(kCCount == WideInfo::kCounters, "fefw_game.h WideInfo::kCounters");
+                                               "off-screen marker", "2D effect", "2D effect scissor", "movie", "stat chart",
+                                               "map batch"};
+static_assert(kCCount == WideInfo::kCounters, "ObeliskChamber_game.h WideInfo::kCounters");
 
 struct Wide {
     uint64_t base = 0x7100000000ull;
@@ -174,7 +194,28 @@ void hook_projection(::Ctx* c, uint64_t, void*) {
                              static_cast<unsigned long long>(c->x[0]), 960.0 * w.k);
 }
 
-// A picture or window that spans the whole 1920 wide layout (a dim, a menu backdrop) is drawn k times wider, so it covers the output: its
+// The pane's name (nn::ui2d keeps it inline, at most 24 characters), compared with a C string.
+bool pane_named(uint64_t pane, const char* name) {
+    if (!pane) return false;
+    const char* n = reinterpret_cast<const char*>(pane + kPaneName);
+    return std::strncmp(n, name, 24) == 0;
+}
+
+// Pictures that span the layout but are content, not a backdrop, so they keep their 16:9 shape (found with a test mod that logged every
+// widened pane by name, size and parent on the Stats, roster, World Map and quest screens):
+//   Img00, 1480x1080   the world map's image (RootPane/Right/L_Img/Img00), on the right edge
+//   Bg, 1920x1080      the Stats / roster screen's frame, painted into the texture, directly under the root (RootPane or, while the layout
+//                      is built, __NewRoot__); the header bar Bg under the same root is 1920x200 and stays widened
+bool keep_16_9(uint64_t pane, float w, float h) {
+    if (pane_named(pane, "Img00")) return w == 1480.0f && h == 1080.0f;
+    if (pane_named(pane, "Bg") && w == 1920.0f && h == 1080.0f) {
+        const uint64_t parent = rdv<uint64_t>(pane + kPaneParent);
+        return pane_named(parent, "RootPane") || pane_named(parent, "__NewRoot__");
+    }
+    return false;
+}
+
+// A picture that spans the whole 1920 wide layout (a dim, a menu backdrop) is drawn k times wider, so it covers the output: its
 // Calculate copies the pane's global matrix into the draw info's model-view (LoadMtx) and from there into the pane's constant buffer; the
 // model-view's x row is scaled in between. The pane's own matrix, and so its children, stay as they are. Text boxes are not pictures.
 void widen_pane(uint64_t pane, uint64_t info) {
@@ -191,6 +232,7 @@ void widen_pane(uint64_t pane, uint64_t info) {
     const bool at_left = covers_width || std::fabs(left + 960.0f) <= 2.0f;
     const bool at_right = covers_width || std::fabs(right - 960.0f) <= 2.0f;
     if (!at_left && !at_right) return;
+    if (keep_16_9(pane, pw, rdv<float>(pane + kPaneSize + 4))) return;
     // x' = a x + b in layout units: a full-width pane scales about the centre; a full-height one on one edge reaches the output's edge there
     float a = w.k, b = 0.0f;
     if (!(at_left && at_right)) {
@@ -207,7 +249,8 @@ void widen_pane(uint64_t pane, uint64_t info) {
                 static_cast<unsigned long long>(rdv<uint64_t>(pane) - w.base), pw, rdv<float>(pane + kPaneSize + 4), left, right, a * left + b, a * right + b);
 }
 void hook_picture_calc(::Ctx* c, uint64_t, void*) { widen_pane(c->x[19], c->x[20]); }
-void hook_window_calc(::Ctx* c, uint64_t, void*) { widen_pane(c->x[20], c->x[19]); }
+// Window::Calculate (kWindowCalc, still a site in main.sites) is no longer hooked: every full-width Window seen is a framed panel
+// (RootPane/Alpha/N_Menu/Wdw 1920x568, the world map's Right/L_Map/N_Top/Map_Base) that looked stretched when widened.
 
 void hook_scissor(::Ctx* c, uint64_t, void*) {
     Wide& w = ws();
@@ -234,6 +277,46 @@ void hook_stat_graph(::Ctx* c, uint64_t, void*) {
     fix(sp + 0x10);
     if (first(kCStatGraph)) NXLOG_I(kTag, "ultrawide: stat chart polygon x scaled by %.4f about 960", w.inv_k);
 }
+
+// ---- map routes ---------------------------------------------------------------------------------------------------------------------------
+// The world / quest map's location dots and the route lines between them are written straight into the same 2D primitive buffer, in 1920x1080
+// layout pixels, while the map picture is a pane drawn in the centred 16:9 area: on a wide output they spread sideways past it. Each of the
+// two batches is bracketed: at its start the buffer's vertex count is noted, at its end every vertex pushed since gets x' = 960 + (x - 960) / k.
+struct MapBatch {
+    uint64_t renderer = 0;
+    uint32_t count0 = 0;
+    bool open = false;
+};
+thread_local MapBatch t_dots, t_lines;
+
+void map_batch_start(MapBatch& b, uint64_t renderer) {
+    b.open = false;
+    if (!renderer || !mem::is_mapped(renderer + kPrimCount, 4)) return;
+    b.renderer = renderer;
+    b.count0 = rdv<uint32_t>(renderer + kPrimCount);
+    b.open = true;
+}
+void map_batch_end(MapBatch& b) {
+    if (!b.open) return;
+    b.open = false;
+    const uint32_t count1 = rdv<uint32_t>(b.renderer + kPrimCount);
+    if (count1 <= b.count0 || count1 - b.count0 > kPrimMaxIndex + 1) return;   // nothing pushed, or the count went back
+    const uint32_t last = std::min(count1, kPrimMaxIndex);
+    if (last <= b.count0) return;
+    const uint64_t verts = rdv<uint64_t>(b.renderer + kPrimVerts);
+    const uint64_t from = verts + (static_cast<uint64_t>(b.count0) + 1) * kPrimStride;
+    if (!verts || !mem::is_mapped(from, static_cast<uint64_t>(last - b.count0) * kPrimStride)) return;
+    const float inv_k = ws().inv_k;
+    for (uint64_t a = from, end = verts + (static_cast<uint64_t>(last) + 1) * kPrimStride; a < end; a += kPrimStride)
+        wrv<float>(a, 960.0f + (rdv<float>(a) - 960.0f) * inv_k);
+    if (first(kCMapRoutes)) NXLOG_I(kTag, "ultrawide: map batch of %u vertices: x scaled by %.4f about 960", last - b.count0, inv_k);
+}
+void hook_dots_start(::Ctx* c, uint64_t, void*) {
+    map_batch_start(t_dots, mem::is_mapped(c->x[0], 8) ? rdv<uint64_t>(c->x[0]) : 0);
+}
+void hook_dots_end(::Ctx*, uint64_t, void*) { map_batch_end(t_dots); }
+void hook_lines_start(::Ctx* c, uint64_t, void*) { map_batch_start(t_lines, c->x[0]); }
+void hook_lines_end(::Ctx*, uint64_t, void*) { map_batch_end(t_lines); }
 
 // ---- world markers ------------------------------------------------------------------------------------------------------------------------
 void hook_marker_s1(::Ctx* c, uint64_t, void*) {
@@ -380,7 +463,7 @@ void wide_install(uint64_t base, int out_w, int out_h) {
     w.cam_aspect_num = static_cast<float>(9.0 * out_w / out_h);
     w.active = true;
     // [fefw] ultrawide_skip (debug): a comma-separated list of hook groups to leave out: camera, ui, backdrop, scissor, markers, fx, fxclip,
-    // movie, statgraph
+    // movie, statgraph, maproutes
     std::string skip = "," + config_get_str("fefw", "ultrawide_skip", "") + ",";
     skip.erase(std::remove(skip.begin(), skip.end(), ' '), skip.end());
     auto on = [&](const char* g) { return skip.find(std::string(",") + g + ",") == std::string::npos; };
@@ -389,7 +472,6 @@ void wide_install(uint64_t base, int out_w, int out_h) {
     if (on("ui")) add(kProjSet, &hook_projection);
     if (on("backdrop")) {
         add(kPictureCalc, &hook_picture_calc);
-        add(kWindowCalc, &hook_window_calc);
     }
     if (on("scissor")) add(kScissor, &hook_scissor);
     if (on("markers")) {
@@ -398,6 +480,12 @@ void wide_install(uint64_t base, int out_w, int out_h) {
         add(kEdgeMarker, &hook_edge_marker);
     }
     if (on("statgraph")) add(kStatGraph, &hook_stat_graph);
+    if (on("maproutes")) {
+        add(kDotsStart, &hook_dots_start);
+        add(kDotsEnd, &hook_dots_end);
+        add(kLinesStart, &hook_lines_start);
+        add(kLinesEnd, &hook_lines_end);
+    }
     if (on("fx")) add(kFxOrtho, &hook_fx_ortho);
     if (on("fx") && on("fxclip")) {
         add(kFxScissor1, &hook_fx_scissor);
@@ -435,4 +523,4 @@ WideInfo wide_info() {
     return i;
 }
 
-}  // namespace nxrt::games::fefw
+}  // namespace nxrt::games::ObeliskChamber

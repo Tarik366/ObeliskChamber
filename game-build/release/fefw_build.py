@@ -1,24 +1,24 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""First-run game build of the release package: turns the player's own dump into fefw.exe on their PC.
+"""First-run game build of the release package: turns the player's own dump into ObeliskChamber.exe on their PC.
 
     python -I tools/build/fefw_build.py --exefs <dump>/updates/<v>/exefs --game <install folder> [--jobs N] [--keep] [--cpu V]
     python -I tools/build/fefw_build.py --check --game <install folder> [--cpu V]
 
 --cpu picks the build for the processor (CPU_VARIANTS): fma (FMA3 + AVX, the default and faster one) or compat (no FMA3: Sandy
 Bridge, Ivy Bridge, Xeon E5 v1/v2, AMD Bulldozer, ...; issue 33). auto (the default; the launcher passes the one it detected) asks the
-bundled Zig what this processor has. The variant is part of the build stamp, so a fefw.exe built for the other one is rebuilt.
+bundled Zig what this processor has. The variant is part of the build stamp, so an ObeliskChamber.exe built for the other one is rebuilt.
 
 The package ships no game code. This script
   1. verifies the dump's ExeFS against dump_hashes.json (the supported build: sha256 of every module + main's build ID) and writes
      <game>/exefs: the same NSOs with main uncompressed (the console's main is ZBIC-compressed; tools/build/nso_unpack.py),
   2. lifts the six NSOs with the bundled lifter (recomp/nxrecomp) into <game>/build/lift,
   3. compiles the generated C++ with the bundled Zig (zig c++, mingw target) into <game>/build/obj, in parallel,
-  4. links fefw.exe = sdk/fefw_stub.cpp + the lifted objects + sdk/fefw_rt.lib (the runtime, fefw_rt.dll in the package),
+  4. links ObeliskChamber.exe = sdk/fefw_stub.cpp + the lifted objects + sdk/fefw_rt.lib (the runtime, fefw_rt.dll in the package),
   5. deletes the generated sources and objects (unless --keep) and records the result in <game>/build/done.json.
 
 The build stamp (state.json, done.json) is the dump (main build ID, module hashes) plus tool_stamp(): everything in this
-package that goes into fefw.exe (lifter sources, main.sites, compile flags and processor variant, the SDK files with fefw_rt.lib). A release that
-changes any of them makes an older stamp stale: Set up then lifts, compiles and links again from scratch (the old fefw.exe
+package that goes into ObeliskChamber.exe (lifter sources, main.sites, compile flags and processor variant, the SDK files with fefw_rt.lib). A release that
+changes any of them makes an older stamp stale: Set up then lifts, compiles and links again from scratch (the old ObeliskChamber.exe
 stays until the new one is linked over it). --check compares <game>/build/done.json with this package's tools only (no
 dump check, well under a second) and prints one JSON line {"current": bool, "reason": text}; exit 0 current, 3 not.
 
@@ -43,7 +43,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RECOMP = os.path.join(HERE, 'recomp')
 SDK = os.path.join(HERE, 'sdk')
 WINDOWS = os.name == 'nt'
-# the same Windows target from either host: on Linux the launcher starts fefw.exe through Wine/Proton
+# the same Windows target from either host: on Linux the launcher starts ObeliskChamber.exe through Wine/Proton
 ZIG = os.path.join(HERE, 'zig', 'zig.exe' if WINDOWS else 'zig')
 FORMAT = 2          # bump when the build layout or the stamp changes: older builds (partial or done) are then started over
 # the lifter as game-build/scripts/make-release.ps1 ships it: paths under RECOMP, the same in the zip (tools/build/recomp/...)
@@ -85,10 +85,10 @@ CXXFLAGS_COMMON = ['-std=c++20', '-O1', '-w', '-fno-exceptions', '-fno-rtti', '-
 
 
 # ---- build tuning (<game>/build_options.json) -------------------------------------------------------------------------------
-# Optional, for a fefw.exe built for one PC. With no file (or an empty one) the build is the release's, stamp unchanged. Keys:
+# Optional, for an ObeliskChamber.exe built for one PC. With no file (or an empty one) the build is the release's, stamp unchanged. Keys:
 #   "cpu":         "native" (the processor Set up runs on, as the bundled Zig names it, e.g. raptorlake), an LLVM CPU name
 #                  ("raptorlake", "alderlake", "znver4", "x86_64_v3", ...) or "" (the variant's -mcpu). cx16 and popcnt are always
-#                  added. A fefw.exe built this way may not start on an older processor: build it on the PC that plays.
+#                  added. A ObeliskChamber.exe built this way may not start on an older processor: build it on the PC that plays.
 #   "opt":         "O1" (the release's), "O2" or "O3": optimisation of the lifted code. Higher builds slower and takes more memory.
 #   "main_shards": translation units of main (the release: 153). Fewer, larger units let more of main's code inline across
 #                  functions, at more memory per compile. 40 to 400.
@@ -157,7 +157,7 @@ def load_tune(game, quiet=False):
 
 
 def tune_stamp():
-    """The build options that change fefw.exe (job_gib does not), when any differs from the release's; else None."""
+    """The build options that change ObeliskChamber.exe (job_gib does not), when any differs from the release's; else None."""
     st = {k: TUNE[k] for k in ('cpu', 'opt', 'main_shards') if TUNE[k] != TUNE_DEFAULTS[k]}
     return st or None
 
@@ -230,15 +230,18 @@ def tree_hash(root, rels):
 SHADER_TRANSLATOR_VERSION = 3
 
 
-def tool_stamp(variant, patch_stamp=None):
-    """The part of the build stamp this package decides: a release that changes any of it rebuilds fefw.exe. The processor
-    variant is in it as well, so a fefw.exe built for the other one is rebuilt (the lift is kept: see main). The exefs patches of
-    the installed mods (exefs_patch_stamp) are in it only when there are any, so a build without patches keeps its old stamp."""
+def tool_stamp(variant, patch_stamp=None, sites_stamp=None):
+    """The part of the build stamp this package decides: a release that changes any of it rebuilds ObeliskChamber.exe. The processor
+    variant is in it as well, so an ObeliskChamber.exe built for the other one is rebuilt (the lift is kept: see main). The exefs patches of
+    the installed mods (exefs_patch_stamp) and their hook sites (mod_sites_stamp) are in it only when there are any, so a build without
+    them keeps its old stamp."""
     stamp = {'lifter': tree_hash(RECOMP, LIFTER), 'sites': tree_hash(RECOMP, [SITES]), 'sdk': tree_hash(SDK, SDK_FILES),
              'runtime': sha256(os.path.join(SDK, 'fefw_rt.lib')), 'cxxflags': cxxflags(variant), 'cpu': variant,
              'modules': [list(m) for m in MODULES]}
     if patch_stamp:
         stamp['exefs_patches'] = patch_stamp
+    if sites_stamp:
+        stamp['mod_sites'] = sites_stamp
     if tune_stamp():
         stamp['tune'] = tune_stamp()
     return stamp
@@ -290,35 +293,38 @@ def pick_variant(want):
 
 
 def check(game, variant):
-    """Whether fefw.exe and <game>/build/done.json were built with this package's tools for this processor: (current, reason)."""
-    if not os.path.isfile(os.path.join(game, 'fefw.exe')):
-        return False, 'fefw.exe is not built yet'
+    """Whether ObeliskChamber.exe and <game>/build/done.json were built with this package's tools for this processor: (current, reason)."""
+    if not os.path.isfile(os.path.join(game, 'ObeliskChamber.exe')):
+        return False, 'ObeliskChamber.exe is not built yet'
     done = read_json(os.path.join(game, 'build', 'done.json'))
     if not isinstance(done, dict):
-        return False, 'fefw.exe has no finished build record'
+        return False, 'ObeliskChamber.exe has no finished build record'
     if done.get('format') != FORMAT or not isinstance(done.get('tools'), dict):
-        return False, 'fefw.exe was built by an older release'
+        return False, 'ObeliskChamber.exe was built by an older release'
     try:
         load_tune(game, quiet=True)
         bid = json.load(open(os.path.join(HERE, 'dump_hashes.json'), encoding='utf-8'))['main_build_id']
         patch_stamp = exefs_patch_stamp(collect_exefs_patches(game, bid))
+        sites_stamp = mod_sites_stamp(collect_mod_sites(game, bid))
     except Fail as e:
         return False, str(e)
-    want = tool_stamp(variant, patch_stamp)
+    want = tool_stamp(variant, patch_stamp, sites_stamp)
     changed = [k for k in sorted(set(want) | set(done['tools'])) if done['tools'].get(k) != want.get(k)]
     if changed == ['exefs_patches']:
         return False, 'the exefs patches in mods changed (Set up applies them)'
+    if changed and set(changed) <= {'exefs_patches', 'mod_sites'}:
+        return False, 'the hook sites of mods changed (Set up lifts the game with them)'
     if changed and set(changed) <= {'tune', 'cxxflags'}:
         return False, 'build_options.json changed (Set up builds with it)'
     if 'cpu' in changed and done['tools'].get('cpu') in CPU_VARIANTS:
-        return False, ('fefw.exe was built for processors with FMA3; this one needs the compatible build' if variant == 'compat'
-                       else 'fefw.exe is the compatible build; this processor runs the faster FMA3 build')
+        return False, ('ObeliskChamber.exe was built for processors with FMA3; this one needs the compatible build' if variant == 'compat'
+                       else 'ObeliskChamber.exe is the compatible build; this processor runs the faster FMA3 build')
     if changed:
         return False, 'this release changes ' + ', '.join(changed)
     shaders = read_json(os.path.join(game, 'shader_cache', 'setup.json'))
     if isinstance(shaders, dict) and shaders.get('translator_version') != SHADER_TRANSLATOR_VERSION:
         return False, 'this release changes the shader translator (shaders are translated again)'
-    return True, 'fefw.exe matches this release'
+    return True, 'ObeliskChamber.exe matches this release'
 
 
 def read_json(path):
@@ -391,7 +397,7 @@ def write_exefs(exefs, out):
 # ---- exefs patches (mods/<name>/exefs/*.ips, *.pchtxt) ----------------------------------------------------------------------
 # The game code is lifted ahead of time, so a patch cannot be applied when the game starts as on an emulator. Set up applies the
 # patches of the installed mods to <game>/exefs/main (the plain NSO the lifter and the runtime both read) before lifting: code
-# patches are then compiled into fefw.exe, data patches are loaded by the runtime. Only patches for main's build ID are used. The
+# patches are then compiled into ObeliskChamber.exe, data patches are loaded by the runtime. Only patches for main's build ID are used. The
 # patched bytes are part of the build stamp, so adding, changing or removing a patch makes Set up build again. A patch must not touch
 # an instruction that main.sites patches or hooks (the hook would run against code it was not written for): Set up stops and names it.
 PROGRAM_ID = 0x04007EF01F8AE000
@@ -606,8 +612,9 @@ def site_addresses():
     return out
 
 
-def apply_exefs_patches(main_path, patches):
-    """Write the patches into the plain main NSO (uncompressed segments) and fix the segment hashes in its header."""
+def apply_exefs_patches(main_path, patches, mod_sites=()):
+    """Write the patches into the plain main NSO (uncompressed segments) and fix the segment hashes in its header. A patch may not
+    touch a site of main.sites or one a mod adds (collect_mod_sites)."""
     if not patches:
         return
     data = bytearray(open(main_path, 'rb').read())
@@ -619,6 +626,8 @@ def apply_exefs_patches(main_path, patches):
         foff, moff, size = (int.from_bytes(data[0x10 + 0x10 * i + k:0x14 + 0x10 * i + k], 'little') for k in (0, 4, 8))
         segs.append((foff, moff, size))
     sites = site_addresses()
+    for where, kind, addr in mod_sites:
+        sites.setdefault(addr - MODULES[0][2], '%s (%s)' % (kind, where))
     touched = set()
     owner = {}
     for name, where, mem in patches:
@@ -647,6 +656,187 @@ def apply_exefs_patches(main_path, patches):
     os.replace(tmp, main_path)
     n = sum(len(m) for _, _, m in patches)
     progress('verify', 1, 1, 'Applied %d exefs patch record(s) from %s' % (n, ', '.join(sorted({w for _, w, _ in patches}))))
+
+
+# ---- hook sites of mods (mods/<name>/exefs/*.sites) --------------------------------------------------------------------------------
+# A code mod (exefs/*.dll, runtime/include/nxrt/mod_api.h) can hook only an instruction the game was lifted with as a site. A mod
+# that needs sites of its own lists them in exefs/<anything>.sites, in the syntax of main.sites but only with the kinds that just add
+# a call into the runtime (inline, midhook, entryhook: the instructions are lifted as before), plus one line
+#     @nsobid <main build ID>          (as in a .pchtxt)
+# so that sites for another version of the game are left out. Set up lifts main with main.sites plus these sites; they are part
+# of the build stamp, so installing, updating or removing such a mod lifts again. The sites of a mod with exefs = off in mod.ini
+# are kept: a site no hook is attached to only passes through, so switching the mod on or off (the game's Mods menu) needs no Set up,
+# only the next start, like any DLL mod. The list main was lifted with is written next to ObeliskChamber.exe (ObeliskChamber.sites,
+# write_lifted_sites), so the runtime can tell a mod whose sites are missing from this build.
+MOD_SITE_KINDS = ('inline', 'midhook', 'entryhook')
+
+
+def collect_mod_sites(game, build_id):
+    """The hook sites the installed mods add to main: [(file:line, kind, guest address)], in mod order."""
+    found = []
+    for name, d in find_mod_dirs(os.path.join(game, 'mods')):
+        ex = os.path.join(d, 'exefs')
+        if not os.path.isdir(ex):        # exefs = off does not count here (see above)
+            continue
+        for f in sorted(os.listdir(ex), key=str.lower):
+            if not f.lower().endswith('.sites') or not os.path.isfile(os.path.join(ex, f)):
+                continue
+            where = '%s/exefs/%s' % (name, f)
+            bid, recs = None, []
+            text = open(os.path.join(ex, f), encoding='utf-8-sig', errors='replace').read()
+            for ln, line in enumerate(text.splitlines(), 1):
+                t = line.split('#', 1)[0].split()
+                if not t:
+                    continue
+                if t[0].lower() == '@nsobid':
+                    if len(t) != 2:
+                        raise Fail('%s:%d: @nsobid takes one build ID' % (where, ln))
+                    bid = t[1]
+                    continue
+                if t[0] not in MOD_SITE_KINDS:
+                    raise Fail('%s:%d: "%s" is not a site a mod can add (%s)' % (where, ln, t[0], ', '.join(MOD_SITE_KINDS)))
+                try:
+                    if len(t) != 2:
+                        raise ValueError
+                    addr = int(t[1], 16)
+                except ValueError:
+                    raise Fail('%s:%d: expected "<kind> <guest address in hex>"' % (where, ln))
+                recs.append((ln, t[0], addr))
+            if bid is None:
+                raise Fail('%s has no @nsobid line (the build ID of the main its sites are for)' % where)
+            if not bid_matches(bid, build_id):
+                continue                 # another version of the game
+            for ln, kind, addr in recs:
+                if addr % 4 or not MODULES[0][2] <= addr < MODULES[1][2]:
+                    raise Fail('%s:%d: 0x%x is not an instruction address in main (main is at 0x%x)' % (where, ln, addr, MODULES[0][2]))
+                found.append(('%s:%d' % (where, ln), kind, addr))
+    return found
+
+
+def mod_sites_stamp(mod_sites):
+    """One hash over the sites the mods add (comments, order and duplicates do not count)."""
+    if not mod_sites:
+        return None
+    return hashlib.sha256(''.join('%s %x\n' % ka for ka in sorted({(k, a) for _, k, a in mod_sites})).encode()).hexdigest()
+
+
+# Midhook sites and the condition flags (runtime/include/nxrt/hooks.h): lifted functions keep NZCV in a local, so a midhook that
+# runs the rest of the function itself starts it with stale flags. Its site has to be where the flags are set again before they are
+# read, never between a compare and the instruction that uses it. Set up follows the code forward from the site (flags_warning) and
+# notes a midhook whose flags are read before they are set again. (mask, value, name)
+FLAG_READERS = (
+    (0xFF000010, 0x54000000, 'b.cond'),
+    (0x3FE00000, 0x1A800000, 'csel / csinc / csinv / csneg (cset, cinc, cneg ...)'),
+    (0x3FE00000, 0x3A400000, 'ccmp / ccmn'),
+    (0xFF200C00, 0x1E200400, 'fccmp / fccmpe'),
+    (0xFF200C00, 0x1E200C00, 'fcsel'),
+    (0x1FE0FC00, 0x1A000000, 'adc / sbc'),
+    (0xFFFFFFE0, 0xD53B4200, 'mrs nzcv'),
+)
+FLAG_SETTERS = (
+    (0x3F800000, 0x31000000, 'adds / subs (immediate; cmp / cmn)'),
+    (0x3F000000, 0x2B000000, 'adds / subs (register; cmp / cmn)'),
+    (0x7F800000, 0x72000000, 'ands (immediate; tst)'),
+    (0x7F000000, 0x6A000000, 'ands / bics (register; tst)'),
+    (0x3FE0FC00, 0x3A000000, 'adcs / sbcs'),
+    (0x3FE00000, 0x3A400000, 'ccmp / ccmn'),
+    (0xFF203C00, 0x1E202000, 'fcmp / fcmpe'),
+    (0xFF200C00, 0x1E200400, 'fccmp / fccmpe'),
+    (0xFFFFFFE0, 0xD51B4200, 'msr nzcv'),
+)
+
+
+def insn_kind(word, table):
+    return next((name for mask, value, name in table if word & mask == value), None)
+
+
+# Instructions that end the forward scan. A call (bl / blr) or a return leaves the flags dead (the ABI does not keep them across
+# either); br goes somewhere the scan cannot follow. b is followed to its target; cbz / cbnz / tbz / tbnz, which do not touch the
+# flags, are followed on their fall-through path.
+FLAG_SCAN_STOP = (
+    (0xFC000000, 0x94000000),   # bl
+    (0xFFFFFC1F, 0xD63F0000),   # blr
+    (0xFFFFFC1F, 0xD65F0000),   # ret
+    (0xFFFFFC1F, 0xD61F0000),   # br
+    (0xFFE0001F, 0xD4000001),   # svc
+    (0xFFE00000, 0xD4200000),   # brk
+)
+FLAG_SCAN_LIMIT = 64            # instructions; past that the site counts as fine
+
+
+def flags_warning(word_at, off, lo, hi):
+    """Why a midhook at main offset `off` may start a continuation with stale flags, or None. Follows the code from the site
+    (word_at(offset) = instruction word, code in [lo, hi)) until the flags are set again (fine), read (a note), or the path
+    leaves what can be followed (fine)."""
+    at, seen = off, set()
+    for _ in range(FLAG_SCAN_LIMIT):
+        if not lo <= at < hi or at in seen:
+            return None
+        seen.add(at)
+        w = word_at(at)
+        reads = insn_kind(w, FLAG_READERS)
+        if reads:                                   # checked first: ccmp / adcs read the flags before they set them
+            if at == off:
+                return 'its instruction reads the condition flags (%s)' % reads
+            return 'the condition flags are read at 0x%x (%s) before they are set again' % (at + MODULES[0][2], reads)
+        if insn_kind(w, FLAG_SETTERS):
+            return None
+        if any(w & m == v for m, v in FLAG_SCAN_STOP):
+            return None
+        if w & 0xFC000000 == 0x14000000:            # b: follow it
+            imm = w & 0x3FFFFFF
+            at += (imm - (1 << 26) if imm & (1 << 25) else imm) * 4
+            continue
+        at += 4                                     # anything else, and cbz / tbz falling through
+    return None
+
+
+def write_sites(main_path, mod_sites, build):
+    """The site list main is lifted with: main.sites itself when no mod adds sites, else build/main.sites = main.sites plus the
+    sites of the mods, each checked to lie in main's code."""
+    base = os.path.join(RECOMP, *SITES.split('/'))
+    if not mod_sites:
+        return base
+    with open(main_path, 'rb') as f:
+        data = f.read()
+    text_file, text_off, text_size = (int.from_bytes(data[o:o + 4], 'little') for o in (0x10, 0x14, 0x18))
+    word_at = lambda off: int.from_bytes(data[text_file + off - text_off:text_file + off - text_off + 4], 'little')
+    own = open(base).read()
+    have = set()
+    for line in own.splitlines():
+        t = line.split('#', 1)[0].split()
+        if len(t) >= 2:
+            have.add((t[0], int(t[1], 16)))
+    lines = []
+    for where, kind, addr in mod_sites:
+        off = addr - MODULES[0][2]
+        if not text_off <= off < text_off + text_size:
+            raise Fail("%s: 0x%x is outside main's code" % (where, addr))
+        if kind == 'midhook':
+            why = flags_warning(word_at, off, text_off, text_off + text_size)
+            if why:
+                progress('verify', 1, 1, 'Note: %s: midhook 0x%x: %s. A hook there that runs the rest of the function itself '
+                         '(call_guest at its site) would start it with stale flags; one that returns 0 is fine '
+                         '(runtime/include/nxrt/hooks.h)' % (where, addr, why))
+        if (kind, addr) not in have:
+            have.add((kind, addr))
+            lines.append('%s 0x%x   # %s' % (kind, addr, where))
+    out = os.path.join(build, 'main.sites')
+    with open(out, 'w', encoding='utf-8') as f:
+        f.write(own.rstrip('\n') + '\n\n# ---- added by mods (exefs/*.sites)\n' + ''.join(l + '\n' for l in lines))
+    progress('verify', 1, 1, 'Hook sites from mods: %d (%s)' % (len(lines), ', '.join(sorted({w.rsplit(':', 1)[0] for w, _, _ in mod_sites}))))
+    return out
+
+
+def write_lifted_sites(game, sites, build_id):
+    """<game>/ObeliskChamber.sites: the site list main was lifted with (main.sites plus the mods' sites) under an @nsobid line, read by
+    the runtime to check hooks and the sites of installed mods against this build (runtime/src/services/mods_dll.cpp)."""
+    dst = os.path.join(game, 'ObeliskChamber.sites')
+    tmp = dst + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write('# The hook sites ObeliskChamber.exe was built with (written by Set up)\n@nsobid %s\n' % build_id)
+        f.write(open(sites, encoding='utf-8').read())
+    os.replace(tmp, dst)
 
 
 def popen(cmd, **kw):
@@ -701,9 +891,8 @@ class Runner:
         return rc, '\n'.join(tail)
 
 
-def lift(runner, exefs, gen, jobs):
-    """One lifter process per module (the lifter itself runs `jobs` worker processes)."""
-    sites = os.path.join(RECOMP, 'games', 'fefw', 'main.sites')
+def lift(runner, exefs, gen, jobs, sites):
+    """One lifter process per module (the lifter itself runs `jobs` worker processes); main with the site list `sites`."""
     for k, (name, nso, base, index, shards) in enumerate(MODULES):
         out = os.path.join(gen, name)
         marker = os.path.join(out, '.lifted')
@@ -841,14 +1030,14 @@ def replace_retry(src, dst):
 
 
 def clear_high_entropy_va(exe):
-    """fefw.exe keeps host allocations low (the guest ranges at 0x71_0000_0000 must stay free): no high-entropy ASLR,
+    """ObeliskChamber.exe keeps host allocations low (the guest ranges at 0x71_0000_0000 must stay free): no high-entropy ASLR,
     as /HIGHENTROPYVA:NO does for the clang-cl build. zig's linker has no flag for it, so clear the PE bit."""
     with open(exe, 'r+b') as f:
         f.seek(0x3c)
         pe = int.from_bytes(f.read(4), 'little')
         f.seek(pe + 24)
         if f.read(2) != b'\x0b\x02':
-            raise Fail('fefw.exe is not a PE32+ image')
+            raise Fail('ObeliskChamber.exe is not a PE32+ image')
         off = pe + 24 + 70
         f.seek(off)
         dc = int.from_bytes(f.read(2), 'little') & ~0x20
@@ -857,7 +1046,7 @@ def clear_high_entropy_va(exe):
 
 
 def link(runner, obj, game, env, variant):
-    progress('link', 0, 1, 'Linking fefw.exe')
+    progress('link', 0, 1, 'Linking ObeliskChamber.exe')
     libs = []
     for name, _, _, _, _ in MODULES:
         a = os.path.join(obj, 'fefw_%s.a' % name)
@@ -882,17 +1071,17 @@ def link(runner, obj, game, env, variant):
         if rc != 0:
             raise Fail('Compiling %s failed (exit %d):\n%s' % (src, rc, tail))
         extra.append(o)
-    tmp = os.path.join(obj, 'fefw.exe')
+    tmp = os.path.join(obj, 'ObeliskChamber.exe')
     # FEFW_CPU_NEEDS: what fefw_rt.dll checks the processor for before the game starts (fefw_rt_api.h)
     cmd = [ZIG, 'c++', '-target', 'x86_64-windows-gnu', '-mcpu=x86_64+cx16', '-O1', '-fno-exceptions', '-fno-rtti', '-I', SDK,
            '-DFEFW_CPU_NEEDS=' + CPU_VARIANTS[variant]['needs'], os.path.join(SDK, 'fefw_stub.cpp'), os.path.join(SDK, 'fefw.rc')] +         extra + libs + [os.path.join(SDK, 'fefw_rt.lib'), '-o', tmp, '-Wl,--stack,134217728', '-Wl,--subsystem,windows']
     rc, tail = runner.run(cmd, env=env, cwd=SDK)
     if rc != 0:
-        raise Fail('Linking fefw.exe failed (exit %d):\n%s' % (rc, tail))
+        raise Fail('Linking ObeliskChamber.exe failed (exit %d):\n%s' % (rc, tail))
     clear_high_entropy_va(tmp)
-    dst = os.path.join(game, 'fefw.exe')
+    dst = os.path.join(game, 'ObeliskChamber.exe')
     replace_retry(tmp, dst)
-    progress('link', 1, 1, 'fefw.exe built')
+    progress('link', 1, 1, 'ObeliskChamber.exe built')
     return dst
 
 
@@ -953,9 +1142,11 @@ def main():
         plain = os.path.join(game, 'exefs')
         write_exefs(a.exefs, plain)
         patches = collect_exefs_patches(game, want['main_build_id'])
-        apply_exefs_patches(os.path.join(plain, 'main'), patches)
+        mod_sites = collect_mod_sites(game, want['main_build_id'])
+        apply_exefs_patches(os.path.join(plain, 'main'), patches, mod_sites)
+        sites = write_sites(os.path.join(plain, 'main'), mod_sites, build)
         stamp = {'format': FORMAT, 'main_build_id': want['main_build_id'], 'sha256': want['sha256'],
-                 'tools': tool_stamp(variant, exefs_patch_stamp(patches))}
+                 'tools': tool_stamp(variant, exefs_patch_stamp(patches), mod_sites_stamp(mod_sites))}
         state_p = os.path.join(build, 'state.json')
         # another dump or another release (or no readable state): start over. Removing lift/ drops the modules' .lifted
         # markers too, so a changed lifter or main.sites lifts everything again, not only recompiles
@@ -970,13 +1161,14 @@ def main():
         env['ZIG_LOCAL_CACHE_DIR'] = os.path.join(build, 'zig-cache')
         gen, obj = os.path.join(build, 'lift'), os.path.join(build, 'obj')
         t = time.time()
-        lift(runner, plain, gen, a.jobs)
+        lift(runner, plain, gen, a.jobs, sites)
         times['lift'] = round(time.time() - t, 1)
         t = time.time()
         compile_all(runner, gen, obj, a.jobs, env, variant)
         times['compile'] = round(time.time() - t, 1)
         t = time.time()
         exe = link(runner, obj, game, env, variant)
+        write_lifted_sites(game, sites, want['main_build_id'])
         times['link'] = round(time.time() - t, 1)
         if not a.keep:
             progress('finish', 0, 1, 'Removing the build files')
@@ -984,7 +1176,7 @@ def main():
                 shutil.rmtree(os.path.join(build, d), ignore_errors=True)
         done = dict(stamp, exe_sha256=sha256(exe), seconds=times, finished=time.strftime('%Y-%m-%d %H:%M:%S'))
         write_json(os.path.join(build, 'done.json'), done)
-        progress('finish', 1, 1, 'fefw.exe is ready (%d s)' % (time.time() - t0))
+        progress('finish', 1, 1, 'ObeliskChamber.exe is ready (%d s)' % (time.time() - t0))
         return 0
     except Cancelled:
         say('cancelled', 'Build paused. Set up again continues where it stopped.')

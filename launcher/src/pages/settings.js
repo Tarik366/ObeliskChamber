@@ -4,8 +4,8 @@ import { fileDetail } from '../rusttext.js';
 
 /*
  * Settings schema. Every key is described in runtime/docs/CONFIG.md.
- *   file: "game" (fefw.ini), "controls" (controls.ini, written by the game on its first start) or "config" (the launcher's own options)
- * Types: select, toggle, size, autonum, range, path, text, number, language. A toggle with `on` / `off` writes those words
+ *   file: "game" (ObeliskChamber.ini), "controls" (controls.ini, written by the game on its first start) or "config" (the launcher's own options)
+ * Types: select, toggle, size, autonum, range (0 to `max`, default 1, shown as a percentage), path, text, number, language. A toggle with `on` / `off` writes those words
  * instead of 1 / 0 (`off`, 0, false or no read as off, anything else as on).
  * Text is a key into src/locales: `label` and `hint` are always translated, and an option name that contains a dot is a key
  * too (a plain name such as "720p" or "DLAA" is shown as it is).
@@ -15,7 +15,7 @@ const IS_LINUX = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.
 
 const SECTIONS = [
   {
-    title: 'settings.sec.picture', icon: 'monitor', file: 'game',
+    title: 'settings.sec.picture', tab: 'settings.tab.picture', icon: 'monitor', file: 'game',
     fields: [
       { id: 'output', type: 'select', label: 'settings.output.label', sec: 'fefw', key: 'output', def: 'console',
         options: [['console', 'settings.output.console'], ['720p', '720p'], ['1080p', '1080p'], ['1440p', '1440p'], ['2160p', '2160p (4K)'],
@@ -57,8 +57,8 @@ const SECTIONS = [
   },
   {
     // [tweaks] language of controls.ini (runtime/docs/CONFIG.md). The names are the ones the runtime reads (services/common.cpp); the list is
-    // the languages the game ships (games/fefw/fefw_data.cpp). A [system] language in fefw.ini wins over this.
-    title: 'settings.sec.language', icon: 'languages', file: 'controls',
+    // the languages the game ships (games/ObeliskChamber/ObeliskChamber_data.cpp). A [system] language in ObeliskChamber.ini wins over this.
+    title: 'settings.sec.language', tab: 'settings.tab.language', icon: 'languages', file: 'controls',
     fields: [
       { id: 'language', type: 'select', label: 'settings.gameLang.label', sec: 'tweaks', key: 'language', def: 'auto',
         options: [
@@ -74,10 +74,12 @@ const SECTIONS = [
     ],
   },
   {
-    title: 'settings.sec.frameRate', icon: 'gauge', file: 'game',
+    title: 'settings.sec.frameRate', tab: 'settings.tab.frameRate', icon: 'gauge', file: 'game',
     fields: [
-      { id: 'fps60', type: 'toggle', label: 'settings.fps60.label', sec: 'fefw', key: 'fps60', def: '0', hint: 'settings.fps60.hint' },
-      { id: 'fps120', type: 'toggle', label: 'settings.fps120.label', sec: 'fefw', key: 'fps120', def: '0', hint: 'settings.fps120.hint' },
+      // one choice over the game's two switches ([fefw] fps60 and fps120; 120 wins when both are on), as in the game's Recomp Options
+      { id: 'fps_target', type: 'rate', label: 'settings.fpsTarget.label', sec: 'fefw', keys: ['fps60', 'fps120'],
+        options: [['30', 'settings.fpsTarget.30'], ['60', 'settings.fpsTarget.60'], ['120', 'settings.fpsTarget.120']],
+        hint: 'settings.fpsTarget.hint' },
       { id: 'smooth_step', type: 'toggle', label: 'settings.smoothStep.label', sec: 'fefw', key: 'smooth_step', def: '0', hint: 'settings.smoothStep.hint' },
       { id: 'frame_gen', type: 'select', label: 'settings.frameGen.label', sec: 'dlss', key: 'frame_gen', def: '0',
         options: [['0', 'settings.frameGen.off'], ['dlss', 'settings.frameGen.dlss'], ['fsr3', 'settings.frameGen.fsr3']],
@@ -85,7 +87,7 @@ const SECTIONS = [
     ],
   },
   {
-    title: 'settings.sec.window', icon: 'monitor', file: 'controls',
+    title: 'settings.sec.window', tab: 'settings.tab.window', icon: 'monitor', file: 'controls',
     fields: [
       { id: 'window_mode', type: 'select', label: 'settings.windowMode.label', sec: 'display', key: 'window_mode', def: 'windowed',
         options: [['windowed', 'settings.windowMode.windowed'], ['borderless', 'settings.windowMode.borderless'], ['exclusive', 'settings.windowMode.exclusive']],
@@ -97,9 +99,9 @@ const SECTIONS = [
     ],
   },
   {
-    title: 'settings.sec.sound', icon: 'volume-2', file: 'controls',
+    title: 'settings.sec.sound', tab: 'settings.tab.sound', icon: 'volume-2', file: 'controls',
     fields: [
-      { id: 'volume', type: 'range', label: 'settings.volume.label', sec: 'audio', key: 'volume', def: '1.0', unit: 'settings.volume.unit' },
+      { id: 'volume', type: 'range', label: 'settings.volume.label', sec: 'audio', key: 'volume', def: '1.0', max: 2, unit: 'settings.volume.unit' },
       { id: 'mute_unfocused', type: 'toggle', label: 'settings.muteUnfocused.label', sec: 'audio', key: 'mute_unfocused', def: '0' },
       // [audio] channels of controls.ini: the game's mix, stereo or 5.1 (runtime/gfx/play/play.cpp maps it to the audio services at start).
       { id: 'audio_channels', type: 'select', label: 'settings.audioChannels.label', sec: 'audio', key: 'channels', def: '2',
@@ -125,7 +127,7 @@ const SECTIONS = [
     ],
   },
   {
-    title: 'settings.sec.input', icon: 'folder', file: 'game',
+    title: 'settings.sec.input', tab: 'settings.tab.input', icon: 'folder', file: 'game',
     fields: [
       { id: 'jc2_mouse', type: 'select', label: 'settings.jc2Mouse.label', sec: 'input', key: 'jc2_mouse', def: 'auto',
         options: [['auto', 'settings.jc2Mouse.auto'], ['on', 'settings.jc2Mouse.on'], ['off', 'settings.jc2Mouse.off']], hint: 'settings.jc2Mouse.hint' },
@@ -135,7 +137,7 @@ const SECTIONS = [
     ],
   },
   {
-    title: 'settings.sec.launcher', icon: 'wrench', file: 'config',
+    title: 'settings.sec.launcher', tab: 'settings.tab.launcher', icon: 'wrench', file: 'config',
     fields: [
       // The launcher's own interface language: kept in launcher.json, applied at once, no file patching involved.
       { id: 'lang', type: 'language', label: 'settings.lang.label', hint: 'settings.lang.hint' },
@@ -143,11 +145,16 @@ const SECTIONS = [
       { id: 'game_dir', type: 'path', label: 'settings.gameDir.label', sec: '', key: 'game_dir', def: '', placeholder: 'settings.gameDir.placeholder', hint: 'settings.gameDir.hint' },
       { id: 'jobs', type: 'number', label: 'settings.jobs.label', sec: '', key: 'jobs', def: '0', min: 0, max: 256, hint: 'settings.jobs.hint' },
       { id: 'minimize_on_play', type: 'toggle', label: 'settings.minimizeOnPlay.label', sec: '', key: 'minimize_on_play', def: '0' },
-      // Linux only: fefw.exe runs through Wine/Proton (launcher/src-tauri/src/play.rs runner())
+      // The launcher drawn with the game's own menu art, read from the dump at start (src/gameart.js). Read once, when the launcher starts.
+      { id: 'game_art', type: 'toggle', label: 'settings.gameArt.label', sec: '', key: 'game_art', def: '0', hint: 'settings.gameArt.hint' },
+      // Linux only: ObeliskChamber.exe runs through Wine/Proton (launcher/src-tauri/src/play.rs runner())
       ...(IS_LINUX ? [{ id: 'runner', type: 'text', label: 'settings.runner.label', sec: '', key: 'runner', def: '', placeholder: 'settings.runner.placeholder', hint: 'settings.runner.hint' }] : []),
     ],
   },
 ];
+
+// the tab that was open, kept while the launcher runs (the page is rendered anew after a save)
+let openTab = 0;
 
 const truthy = (v) => ['1', 'true', 'yes', 'on'].includes(String(v).trim().toLowerCase());
 const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
@@ -159,7 +166,7 @@ const optName = (label) => (String(label).includes('.') ? t(label) : label);
 export async function render(el, ctx) {
   const [cfg, status] = await Promise.all([api('get_config'), api('game_status')]);
   const data = await api('read_settings').catch(() => ({ game_dir: '', game: {}, controls: {}, controls_exists: false }));
-  const files = { game: data.game, controls: data.controls, config: { repo_dir: cfg.repo_dir, game_dir: cfg.game_dir, jobs: String(cfg.jobs || 0), minimize_on_play: cfg.minimize_on_play ? '1' : '0', runner: cfg.runner || '' } };
+  const files = { game: data.game, controls: data.controls, config: { repo_dir: cfg.repo_dir, game_dir: cfg.game_dir, jobs: String(cfg.jobs || 0), minimize_on_play: cfg.minimize_on_play ? '1' : '0', game_art: cfg.game_art ? '1' : '0', runner: cfg.runner || '' } };
   const exists = { game: true, controls: data.controls_exists, config: true };
   const keyOf = (f, k) => (f.file === 'config' ? k : `${f.sec}.${k}`);
   const get = (f, k, def) => files[f.file][keyOf(f, k)] ?? def;
@@ -169,11 +176,12 @@ export async function render(el, ctx) {
     select: (f) => get(f, f.key, f.def),
     toggle: (f) => (f.off !== undefined ? ![f.off, '0', 'false', 'no'].includes(String(get(f, f.key, f.def)).trim().toLowerCase()) : truthy(get(f, f.key, f.def))),
     size: (f) => ({ w: get(f, f.keys[0], f.def[0]), h: get(f, f.keys[1], f.def[1]) }),
+    rate: (f) => (truthy(get(f, f.keys[1], '0')) ? '120' : truthy(get(f, f.keys[0], '0')) ? '60' : '30'),
     autonum: (f) => {
       const v = String(get(f, f.key, f.def));
       return v.toLowerCase() === 'auto' ? { auto: true, num: String(f.numDefault) } : { auto: false, num: v };
     },
-    range: (f) => Math.round(clamp(parseFloat(get(f, f.key, f.def)) || 0, 0, 1) * 100),
+    range: (f) => Math.round(clamp(parseFloat(get(f, f.key, f.def)) || 0, 0, f.max ?? 1) * 100),
     path: (f) => get(f, f.key, f.def),
     text: (f) => get(f, f.key, f.def),
     number: (f) => String(get(f, f.key, f.def)),
@@ -181,6 +189,7 @@ export async function render(el, ctx) {
   };
   const WRITE = {
     select: (f, x) => [[f.sec, f.key, x]],
+    rate: (f, x) => [[f.sec, f.keys[0], x === '60' ? '1' : '0'], [f.sec, f.keys[1], x === '120' ? '1' : '0']],
     toggle: (f, x) => [[f.sec, f.key, x ? (f.on ?? '1') : (f.off ?? '0')]],
     size: (f, x) => [
       [f.sec, f.keys[0], String(clamp(parseInt(x.w, 10) || 1280, 320, 16384))],
@@ -210,45 +219,45 @@ export async function render(el, ctx) {
       const opts = f.options.some(([v]) => String(v) === String(x)) ? f.options : [...f.options, [x, x]];
       return `<select data-f="${f.id}" ${dis(f)}>${opts.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(x) ? 'selected' : ''}>${esc(optName(l))}</option>`).join('')}</select>`;
     },
+    rate: (f, x) => CONTROL.select(f, x),
     toggle: (f, x) => `<label class="switch"><input type="checkbox" data-f="${f.id}" ${x ? 'checked' : ''} ${dis(f)}>${esc(t(x ? f.onLabel || 'common.on' : f.offLabel || 'common.off'))}</label>`,
     size: (f, x) => `<input type="number" data-f="${f.id}" data-part="w" min="320" max="16384" value="${esc(x.w)}" ${dis(f)}><span class="unit">x</span><input type="number" data-f="${f.id}" data-part="h" min="320" max="16384" value="${esc(x.h)}" ${dis(f)}>`,
     autonum: (f, x) => `<label class="switch"><input type="checkbox" data-f="${f.id}" data-part="auto" ${x.auto ? 'checked' : ''} ${dis(f)}>${esc(optName(f.autoLabel))}</label><input type="number" data-f="${f.id}" data-part="num" min="${f.min}" max="${f.max}" value="${esc(x.num)}" ${x.auto || !exists[f.file] ? 'disabled' : ''}><span class="unit">${esc(optName(f.unit))}</span>`,
-    range: (f, x) => `<input type="range" data-f="${f.id}" min="0" max="100" step="1" value="${x}" ${dis(f)}><span class="unit" data-readout="${f.id}" style="min-width: 3.5ch; text-align: right">${x}${esc(optName(f.unit || '%'))}</span>`,
+    range: (f, x) => `<input type="range" data-f="${f.id}" min="0" max="${Math.round((f.max ?? 1) * 100)}" step="1" value="${x}" ${dis(f)}><span class="unit" data-readout="${f.id}" style="min-width: 4.5ch; text-align: right">${x}${esc(optName(f.unit || '%'))}</span>`,
     text: (f, x) => `<input type="text" data-f="${f.id}" spellcheck="false" placeholder="${esc(f.placeholder ? optName(f.placeholder) : '')}" value="${esc(x)}" ${dis(f)}>`,
     number: (f, x) => `<input type="number" data-f="${f.id}" min="${f.min}" max="${f.max}" value="${esc(x)}" ${dis(f)}>`,
     path: (f, x) => `<input type="text" data-f="${f.id}" spellcheck="false" placeholder="${esc(f.placeholder ? optName(f.placeholder) : '')}" value="${esc(x)}" ${dis(f)}><button class="btn" data-browse="${f.id}" ${dis(f)}>${icon('folder-open')}${esc(t('common.browse'))}</button>`,
     language: (f, x) => `<select data-f="${f.id}">${listLangs().map((l) => `<option value="${esc(l.code)}" ${l.code === x ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>`,
   };
 
+  // One tab per section, as the game's Settings; the open one survives a redraw.
+  let tab = Math.min(openTab, SECTIONS.length - 1);
+  const step = (dir) => `<button class="step" tabindex="-1" data-step="${dir}" aria-hidden="true">${dir < 0 ? '\u00AB' : '\u00BB'}</button>`;
+  const stepped = (f) => ['select', 'rate', 'toggle', 'language'].includes(f.type);
   const fieldHtml = (f) => `
-    <div class="field">
+    <div class="field" data-help="${esc(f.hint ? t(f.hint) : '')}">
       <label class="name">${esc(t(f.label))}${f.hint ? `<span class="hint">${esc(t(f.hint))}</span>` : ''}${f.status ? `<span class="hint" data-status="${f.status}">${esc(t('settings.files.checking'))}</span>` : ''}</label>
-      <div class="control">${CONTROL[f.type](f, model[f.id])}</div>
+      <div class="control">${stepped(f) ? step(-1) : ''}${CONTROL[f.type](f, model[f.id])}${stepped(f) ? step(1) : ''}</div>
     </div>`;
 
   const barText = (n) => (n ? (n > 1 ? t('common.unsavedMany', { count: n }) : t('common.unsavedOne')) : t('common.noChanges'));
 
   function draw() {
-    const n = dirtyFields().length;
+    const sec = SECTIONS[tab];
     el.innerHTML = `
       <div class="page">
-        <div class="hero">
-          <h1>${esc(t('settings.title'))}</h1>
-          <p class="dim">${esc(t('settings.introBefore'))}<code>${esc(data.game_dir)}</code>${esc(t('settings.introAfter'))}</p>
+        <div class="tabs">
+          <button class="turn" tabindex="-1" data-turn="-1" aria-hidden="true">\u00AB <span class="key kbd">Q</span><span class="key pad">L</span></button>
+          <div class="tablist" role="tablist">${SECTIONS.map((s, i) => `<button class="tab ${i === tab ? 'active' : ''}" role="tab" tabindex="-1" data-tab="${i}" title="${esc(t(s.title))}">${esc(t(s.tab))}</button>`).join('')}</div>
+          <button class="turn" tabindex="-1" data-turn="1" aria-hidden="true"><span class="key kbd">E</span><span class="key pad">R</span> \u00BB</button>
         </div>
         ${status.state === 'running' ? `<div class="banner warn">${icon('triangle-alert')}<div>${esc(t('settings.gameRunning'))}</div></div>` : ''}
         ${!data.controls_exists ? `<div class="banner info">${icon('info')}<div>${esc(t('settings.noControlsBefore'))}<code>${esc(data.game_dir)}</code>${esc(t('settings.noControlsAfter'))}</div></div>` : ''}
-        ${SECTIONS.map((s) => `<div class="card"><h2>${icon(s.icon)}${esc(t(s.title))}</h2>${s.fields.map((f) => fieldHtml({ ...f, file: s.file })).join('')}</div>`).join('')}
-        <div class="savebar">
-          <span class="dim">${esc(barText(n))}</span>
-          <div class="row">
-            <button class="btn quiet" id="revert" ${n ? '' : 'disabled'}>${icon('undo-2')}${esc(t('common.revert'))}</button>
-            <button class="btn primary" id="save" ${n ? '' : 'disabled'}>${icon('save')}${esc(t('common.save'))}</button>
-          </div>
-        </div>
+        <div class="fields">${sec.fields.map((f) => fieldHtml({ ...f, file: sec.file })).join('')}</div>
       </div>`;
     refreshIcons();
     bind();
+    updateBar();
     checkFiles();
   }
 
@@ -301,11 +310,11 @@ export async function render(el, ctx) {
       return;
     }
     cfg.lang = code;
-    // Keep the in-game F1 menu in step: it reads [gfx] ui_language from fefw.ini.
+    // Keep the in-game F1 menu in step: it reads [gfx] ui_language from ObeliskChamber.ini.
     // zh maps to the zh pack; any other launcher language falls back to English there.
     try {
       await api('write_settings', { edits: [{ file: 'game', section: 'gfx', key: 'ui_language', value: code === 'zh' ? 'zh' : 'auto' }] });
-    } catch (e) { /* fefw.ini may not exist yet; the menu keeps its current language */ }
+    } catch (e) { /* ObeliskChamber.ini may not exist yet; the menu keeps its current language */ }
     await setLang(code, () => {
       for (const id of Object.keys(keep)) model[id] = keep[id];
       // The switch was saved above, so it is not a pending edit: the picker shows the new language and the
@@ -322,13 +331,27 @@ export async function render(el, ctx) {
   let checkSeq = 0;
   async function checkFiles() {
     const seq = ++checkSeq;
-    const r = await api('upscaler_files', { fsrDir: fwd(model.fsr_dll || ''), dlssDir: fwd(model.dlss_dll || ''), xessDir: fwd(model.xess_dll || '') })
+    const r = await api('upscaler_files', { fsrDir: fwd(model.fsr_dll || ''), dlssDir: fwd(model.dlss_dll || ''), xessDir: fwd(model.xess_dll || ''), frameGenDlss: model.frame_gen === 'dlss' })
       .catch(() => null);
     if (seq !== checkSeq || !r) return;
     const line = (name, x) => `${t(name)}: ${x.found ? t('settings.files.found', { detail: x.detail }) : t('settings.files.notFound', { detail: fileDetail(x.detail) })}`;
-    const put = (which, text) => el.querySelectorAll(`[data-status="${which}"]`).forEach((n) => { n.textContent = text; });
+    // `warn`: a sentence appended in red and bold (the files of the Streamline folder the game does not use)
+    const put = (which, text, warn) =>
+      el.querySelectorAll(`[data-status="${which}"]`).forEach((n) => {
+        n.textContent = text;
+        if (warn) {
+          const w = document.createElement('span');
+          w.className = 'status-warn';
+          w.textContent = ` ${warn}`;
+          n.appendChild(w);
+        }
+      });
     put('fsr', `${line('settings.files.upscaling', r.fsr_upscaling)}. ${line('settings.files.frameGen', r.fsr_framegen)}.`);
-    put('dlss', `${line('settings.files.dlss', r.dlss)}. ${line('settings.files.dlssFrameGen', r.dlss_framegen)}.`);
+    // With DLSS chosen (upscaling or frame generation), a folder that holds the rest of the Streamline SDK gets a note about the files this game does not use.
+    const dlssOn = model.upscaler === 'dlss' || model.frame_gen === 'dlss';
+    const unused = dlssOn && r.dlss.found && Array.isArray(r.dlss_unused) ? r.dlss_unused : [];
+    put('dlss', `${line('settings.files.dlss', r.dlss)}. ${line('settings.files.dlssFrameGen', r.dlss_framegen)}.`,
+      unused.length ? t('settings.files.dlssUnused', { files: unused.join(', ') }) : '');
     if (r.xess) put('xess', `${line('settings.files.xess', r.xess)}.`);
   }
   let checkTimer = 0;
@@ -371,20 +394,46 @@ export async function render(el, ctx) {
         }
       }),
     );
-    el.querySelector('#revert').addEventListener('click', () => {
-      for (const f of all) model[f.id] = JSON.parse(orig[f.id]);
-      draw();
-    });
-    el.querySelector('#save').addEventListener('click', save);
+    el.querySelectorAll('[data-tab]').forEach((b) =>
+      b.addEventListener('click', () => {
+        tab = openTab = Number(b.dataset.tab);
+        draw();
+      }),
+    );
+    el.querySelectorAll('[data-turn]').forEach((b) =>
+      b.addEventListener('click', () => {
+        tab = openTab = (tab + Number(b.dataset.turn) + SECTIONS.length) % SECTIONS.length;
+        draw();
+      }),
+    );
+    // the arrows beside a value: the previous or next choice, as left / right do
+    el.querySelectorAll('[data-step]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const input = b.parentElement.querySelector('[data-f]');
+        if (!input || input.disabled) return;
+        if (input.tagName === 'SELECT') {
+          const n = input.options.length;
+          input.selectedIndex = (input.selectedIndex + Number(b.dataset.step) + n) % n;
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+          input.click();
+        }
+      }),
+    );
   }
 
+  const revert = () => {
+    for (const f of all) model[f.id] = JSON.parse(orig[f.id]);
+    draw();
+  };
+
+  /** Save and Revert are key help at the bottom right; the count of unsaved changes rides on Save. */
   function updateBar() {
     const n = dirtyFields().length;
-    const bar = el.querySelector('.savebar');
-    if (!bar) return;
-    bar.querySelector('span').textContent = barText(n);
-    bar.querySelector('#save').disabled = !n;
-    bar.querySelector('#revert').disabled = !n;
+    ctx.keys([
+      { kbd: 'R', pad: 'Y', label: t('common.revert'), run: revert, disabled: !n },
+      { kbd: 'S', pad: 'X', label: t('common.save'), run: save, disabled: !n, note: n ? barText(n) : '' },
+    ]);
   }
 
   async function save() {
@@ -393,7 +442,7 @@ export async function render(el, ctx) {
     for (const f of dirtyFields()) {
       for (const [sec, key, value] of WRITE[f.type](f, model[f.id])) {
         if (f.file === 'config') {
-          cfgNew[key] = key === 'minimize_on_play' ? value === '1' : key === 'jobs' ? parseInt(value, 10) || 0 : key === 'runner' ? String(value).trim() : fwd(value);
+          cfgNew[key] = key === 'minimize_on_play' || key === 'game_art' ? value === '1' : key === 'jobs' ? parseInt(value, 10) || 0 : key === 'runner' ? String(value).trim() : fwd(value);
         } else {
           edits.push({ file: f.file, section: sec, key, value });
         }
@@ -409,5 +458,7 @@ export async function render(el, ctx) {
     }
   }
 
+  ctx.guard(async () => !dirtyFields().length || ctx.confirm(t('settings.discard'), t('common.yes'), t('common.no')));
+  ctx.help(`${t('settings.introBefore')}${data.game_dir}${t('settings.introAfter')}`);
   draw();
 }

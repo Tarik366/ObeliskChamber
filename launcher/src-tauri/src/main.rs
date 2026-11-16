@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Launcher for the fefw recomp (fefw.exe). It works on a checkout of this repository: it reads the player's own dump, runs the
-//! repository's own lift and build scripts on this PC, writes fefw.ini in a run folder and starts the game. It ships no game files.
+//! Launcher for the fefw recomp (ObeliskChamber.exe). It works on a checkout of this repository: it reads the player's own dump, runs the
+//! repository's own lift and build scripts on this PC, writes ObeliskChamber.ini in a run folder and starts the game. It ships no game files.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cpu;
@@ -32,18 +32,20 @@ struct Config {
     repo_dir: String,
     /// The dump folder the player picked (exefs/ and romfs/, or base/ and updates/).
     dump_dir: String,
-    /// Where fefw.ini, controls.ini, the log and the saves live. Empty: <repo>/work/play.
+    /// Where ObeliskChamber.ini, controls.ini, the log and the saves live. Empty: <repo>/work/play.
     game_dir: String,
     /// Build processes. 0: one fewer than the CPU threads.
     jobs: u32,
     minimize_on_play: bool,
     /// do not ask GitHub for a newer release when the launcher starts
     skip_update_check: bool,
-    /// Linux: the command that starts fefw.exe (Wine or Proton, e.g. `umu-run` or `wine`). Empty: Steam's own Proton if it is
+    /// Linux: the command that starts ObeliskChamber.exe (Wine or Proton, e.g. `umu-run` or `wine`). Empty: Steam's own Proton if it is
     /// installed, else umu-run, else wine. Unused on Windows.
     runner: String,
     /// The launcher's own interface language ("en", "zh", or the code of a language pack in locales/). Empty: English.
     lang: String,
+    /// Draw the launcher with the game's own menu art, read from the dump when the launcher starts (read_game_layout).
+    game_art: bool,
 }
 
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -161,12 +163,52 @@ fn save_config(app: AppHandle, config: Config) -> Result<(), String> {
     settings::write_atomic(&config_path(&app)?, &text).map_err(|e| format!("cannot save launcher settings: {e}"))
 }
 
+/// The layout archives the launcher's "game art" look reads (launcher/src/gameart.js).
+const GAME_LAYOUTS: [&str; 4] = ["Title.arc", "CommonMenu.arc", "Common.arc", "Textures/Common.arc"];
+
+/// One of the game's layout archives, from the player's own dump, unpacked (zstd). The bytes go to the page as they are and are
+/// written nowhere. The archive is looked for in the dump's romfs/Layout: the folder itself, base/ and each of updates/.
+#[tauri::command]
+fn read_game_layout(app: AppHandle, name: String) -> Result<tauri::ipc::Response, String> {
+    if !GAME_LAYOUTS.contains(&name.as_str()) {
+        return Err(format!("not a layout the launcher reads: {name}"));
+    }
+    let cfg = load_config(&app);
+    if cfg.dump_dir.is_empty() {
+        return Err("no game files chosen yet".into());
+    }
+    let root = PathBuf::from(&cfg.dump_dir);
+    let mut places = vec![root.join("romfs"), root.join("base").join("romfs")];
+    if let Ok(entries) = fs::read_dir(root.join("updates")) {
+        for e in entries.flatten() {
+            places.push(e.path().join("romfs"));
+        }
+    }
+    let rel: PathBuf = name.split('/').collect();
+    for romfs in places {
+        let plain = romfs.join("Layout").join(&rel);
+        let mut packed = plain.clone().into_os_string();
+        packed.push(".zst");
+        let packed = PathBuf::from(packed);
+        if packed.is_file() {
+            let data = fs::read(&packed).map_err(|e| format!("cannot read {}: {}", packed.display(), e))?;
+            let bytes = zstd::stream::decode_all(&data[..]).map_err(|e| format!("cannot unpack {}: {}", packed.display(), e))?;
+            return Ok(tauri::ipc::Response::new(bytes));
+        }
+        if plain.is_file() {
+            let bytes = fs::read(&plain).map_err(|e| format!("cannot read {}: {}", plain.display(), e))?;
+            return Ok(tauri::ipc::Response::new(bytes));
+        }
+    }
+    Err(format!("{name} is not in the chosen game files"))
+}
+
 #[tauri::command]
 fn get_overview(app: AppHandle) -> Overview {
     let cfg = load_config(&app);
     match repo_of(&cfg) {
         Some(repo) => {
-            let exe = if package_tools().is_some() { game_dir_of(&cfg, &repo).join("fefw.exe") } else { setup::exe_path(&repo) };
+            let exe = if package_tools().is_some() { game_dir_of(&cfg, &repo).join("ObeliskChamber.exe") } else { setup::exe_path(&repo) };
             Overview {
                 repo_dir: dump::fwd(&repo),
                 repo_ok: true,
@@ -340,6 +382,8 @@ struct UpscalerFiles {
     fsr_framegen: FeatureFiles,
     dlss: FeatureFiles,
     dlss_framegen: FeatureFiles,
+    /// NVIDIA files in the Streamline folder the game does not use (not needed by DLSS, nor by frame generation when it is off)
+    dlss_unused: Vec<String>,
     xess: FeatureFiles,
 }
 
@@ -382,11 +426,11 @@ fn files_in(dirs: &[PathBuf], sets: &[&[&str]], what: &str) -> FeatureFiles {
 }
 
 #[tauri::command]
-fn upscaler_files(app: AppHandle, fsr_dir: String, dlss_dir: String, xess_dir: Option<String>) -> Result<UpscalerFiles, String> {
+fn upscaler_files(app: AppHandle, fsr_dir: String, dlss_dir: String, xess_dir: Option<String>, frame_gen_dlss: Option<bool>) -> Result<UpscalerFiles, String> {
     let cfg = load_config(&app);
     let repo = need_repo(&cfg)?;
     let game = game_dir_of(&cfg, &repo);
-    let exe = if package_tools().is_some() { game.join("fefw.exe") } else { setup::exe_path(&repo) };
+    let exe = if package_tools().is_some() { game.join("ObeliskChamber.exe") } else { setup::exe_path(&repo) };
     let fsr = upscaler_dirs(&fsr_dir, "fsr", &game, &exe);
     // Streamline: the game takes the setting's folder, else the first default folder holding sl.interposer.dll, and needs every file there
     let sl = upscaler_dirs(&dlss_dir, "streamline", &game, &exe);
@@ -403,11 +447,28 @@ fn upscaler_files(app: AppHandle, fsr_dir: String, dlss_dir: String, xess_dir: O
     const DLSS: [&str; 4] = ["sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll"];
     const DLSS_G: [&str; 9] =
         ["sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll", "sl.dlss_g.dll", "sl.reflex.dll", "sl.pcl.dll", "nvngx_dlssg.dll", "NvLowLatencyVk.dll"];
+    // Files of the Streamline SDK the game never asks for. Streamline skips the plugins, but NVIDIA's NGX still loads a stray nvngx_*.dll it finds
+    // there (nvngx_deepdvc.dll). sl.pcl.dll stays: the game's Streamline needs it. The frame generation files count as unused while it is off.
+    const DLSS_UNUSED: [&str; 7] = ["sl.deepdvc.dll", "sl.directsr.dll", "sl.dlss_d.dll", "sl.nis.dll", "sl.nvperf.dll", "nvngx_deepdvc.dll", "nvngx_dlssd.dll"];
+    const DLSS_UNUSED_NO_FG: [&str; 4] = ["sl.dlss_g.dll", "sl.reflex.dll", "nvngx_dlssg.dll", "NvLowLatencyVk.dll"];
+    let dlss_unused: Vec<String> = match sl_pick.iter().find(|d| d.join("sl.interposer.dll").is_file()) {
+        Some(d) => {
+            let fg = frame_gen_dlss.unwrap_or(false);
+            DLSS_UNUSED
+                .iter()
+                .chain(if fg { [].iter() } else { DLSS_UNUSED_NO_FG.iter() })
+                .filter(|f| d.join(f).is_file())
+                .map(|f| f.to_string())
+                .collect()
+        }
+        None => Vec::new(),
+    };
     Ok(UpscalerFiles {
         fsr_upscaling: files_in(&fsr, &[&["amd_fidelityfx_upscaler_vk.dll"], &["amd_fidelityfx_vk.dll"]], "amd_fidelityfx_upscaler_vk.dll"),
         fsr_framegen: files_in(&fsr, &[&["amd_fidelityfx_vk.dll"]], "amd_fidelityfx_vk.dll (FidelityFX SDK v1.1.4)"),
         dlss: files_in(&sl_pick, &[&DLSS], "the Streamline files"),
         dlss_framegen: files_in(&sl_pick, &[&DLSS_G], "the Streamline frame generation files"),
+        dlss_unused,
         xess: files_in(&xess, &[&["libxess.dll"]], "libxess.dll"),
     })
 }
@@ -502,7 +563,7 @@ fn play(app: AppHandle, state: State<Arc<setup::Shared>>) -> Result<(), String> 
     play::start(&app, &p.exe(), &p.game_dir, &exe_dir(), cfg.minimize_on_play, &cfg.runner)
 }
 
-/// Linux: whether Steam is installed and the shortcut to fefw.exe exists.
+/// Linux: whether Steam is installed and the shortcut to ObeliskChamber.exe exists.
 #[tauri::command]
 async fn steam_status(app: AppHandle) -> steam::State {
     // off the main thread: it reads the dump folder and walks /proc
@@ -518,7 +579,7 @@ async fn steam_status(app: AppHandle) -> steam::State {
     .unwrap_or(none)
 }
 
-/// Linux: adds fefw.exe to Steam as a non-Steam game. Steam has to be closed for that: when it runs, the player is asked first.
+/// Linux: adds ObeliskChamber.exe to Steam as a non-Steam game. Steam has to be closed for that: when it runs, the player is asked first.
 #[tauri::command]
 async fn add_to_steam(app: AppHandle) -> Result<String, String> {
     use tauri_plugin_dialog::{MessageDialogButtons, MessageDialogKind};
@@ -526,7 +587,7 @@ async fn add_to_steam(app: AppHandle) -> Result<String, String> {
     let p = paths(&cfg)?;
     let exe = p.exe();
     if !exe.is_file() {
-        return Err("fefw.exe is not built yet. Run Set up first.".into());
+        return Err("ObeliskChamber.exe is not built yet. Run Set up first.".into());
     }
     let close = if steam::state(&exe).running {
         app.dialog()
@@ -541,10 +602,10 @@ async fn add_to_steam(app: AppHandle) -> Result<String, String> {
     if steam::state(&exe).running && !close {
         return Err("Not added: Steam is still running.".into());
     }
-    // the upscaler DLLs next to the launcher: fefw.exe finds them by itself when the run folder is the install folder
+    // the upscaler DLLs next to the launcher: ObeliskChamber.exe finds them by itself when the run folder is the install folder
     let launcher_dir = (p.game_dir != exe_dir()).then(|| dump::game_path(&exe_dir()));
     let game_dir = p.game_dir.clone();
-    // what fefw.ini points the game at, for Flatpak Steam's sandbox
+    // what ObeliskChamber.ini points the game at, for Flatpak Steam's sandbox
     let mut reads = vec![p.game_dir.clone(), p.romfs.clone(), p.plain_exefs(), exe_dir()];
     reads.extend(p.dlc.clone());
     tauri::async_runtime::spawn_blocking(move || steam::add(&exe, &game_dir, launcher_dir.as_deref(), &reads, close)).await.map_err(|e| e.to_string())?
@@ -671,7 +732,13 @@ fn cancel_update(state: State<Arc<update::Shared>>) {
 fn restart_launcher(app: AppHandle) -> Result<(), String> {
     let exe = match std::env::var_os("APPIMAGE") {
         Some(a) if !cfg!(windows) => PathBuf::from(a),
-        _ => exe_dir().join(if cfg!(windows) { "fefw-launcher.exe" } else { "fefw-launcher" }),
+        // the launcher in the install folder: under its name, or the old one when the package is from before the rename
+        _ => {
+            let ext = if cfg!(windows) { ".exe" } else { "" };
+            let new = exe_dir().join(format!("ObeliskChamber-launcher{ext}"));
+            let old = exe_dir().join(format!("fefw-launcher{ext}"));
+            if !new.is_file() && old.is_file() { old } else { new }
+        }
     };
     let mut c = std::process::Command::new(&exe);
     setup::host_env(&mut c); // not this AppImage's environment: its mount goes away when this launcher exits
@@ -701,6 +768,7 @@ fn main() {
             get_config,
             save_config,
             get_overview,
+            read_game_layout,
             pick_folder,
             pick_nup,
             import_nup,

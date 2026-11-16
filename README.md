@@ -1,16 +1,14 @@
-# fefw-recomp
+# Obelisk Chamber
 
-> This will probably be the final update.
->
-> I started this project to play a game I really like in the best way possible, and it's grown into a lot more than that. To everyone who had a smooth experience: I'm glad you enjoyed it. To anyone who ran into crashes or other problems: every release tried to improve on that, this one most of all. But this is a heavy game to run, and complete compatibility and perfect optimization are an uphill battle.
->
-> Thanks to everyone who filed issues, sent contributions and helped test.
->
-> I'll be deleting this repo soon. Anyone is free to continue the work.
-
-A native Windows PC port of **Fire Emblem: Fortune's Weave** (Nintendo Switch 2), made by static recompilation. The game's code is
+A native PC version of **Fire Emblem: Fortune's Weave** (Nintendo Switch 2), made by static recompilation. The game's code is
 translated to C++ and compiled into a regular Windows program, which runs on a small runtime that stands in for the console's system
 software and draws with Vulkan. It is not an emulator.
+
+Obelisk Chamber is a continuation of **fefw-recomp by Goldoire**. It adds menus inside the game's own interface, save slots, a mod
+menu, more picture and performance options and a redesigned launcher. The program, settings and package files carry the new name
+(`ObeliskChamber.exe`, `ObeliskChamber.ini`, `ObeliskChamber-launcher.exe`); the runtime DLL is still `fefw_rt.dll` and the game's
+options still sit under `[fefw]`, so existing mods and settings keep working. A settings file from before the rename (`fefw.ini`) is
+copied to the new name the first time the game or the launcher starts.
 
 > [!IMPORTANT]
 > **No game files are included or downloadable here.** This project contains only its own tools and runtime. To play, you need your
@@ -18,20 +16,97 @@ software and draws with Vulkan. It is not an emulator.
 >
 > Not affiliated with or endorsed by Nintendo or Intelligent Systems.
 
+## Where this comes from
+
+Almost all of this project is the original **[fefw-recomp](https://github.com/Goldoire/fefw-recomp) by Goldoire** and its
+contributors. Goldoire wrote, when publishing the last version (0.2.0), that the repository would be deleted and that anyone is free
+to continue the work. This repository does that; it was forked from a copy of the original at release 0.1.7 and later merged 0.2.0.
+
+How much comes from where, measured on 2026-11-15 by the lines of the repository's own text files as `git blame` attributes them
+over the full history (third-party folders and lock files left out, 401,708 lines).
+
+| | Lines | Share |
+|---|---|---|
+| The original fefw-recomp: Goldoire | 386,730 | 96.3% |
+| The original fefw-recomp: its contributors (Stellarznith, Aidan Kinzett, Paulius / Kompas9, ranbinrang-rgb, Abubakar-ux) | 6,140 | 1.5% |
+| [Kompas9's fork](https://github.com/Kompas9/fefw-recomp) (Paulius), changes brought in here | 490 | 0.1% |
+| Obelisk Chamber (this fork): its maintainer | 7,971 | 2.0% |
+| Obelisk Chamber (this fork): contributors (ranbinrang-rgb) | 377 | 0.1% |
+
+So about **97.8% of the code is the original's, 0.1% comes from Kompas9's fork and about 2.1% was added here**. By commits, not
+counting merges, the split is 84 from the original, 17 from Kompas9's fork, 84 from this fork's maintainer and 5 from its
+contributors. Lines are a rough measure of
+work, and the original in turn builds on the projects named under [Credits](#credits) (its first commit holds their code too, so
+their share is inside the 97.9%).
+
+The maintainer's changes in this fork were written with Claude (Anthropic's AI model), directed and tested by the maintainer.
+
 ## Features
 
-- Runs natively on Windows, with no emulator in between
+### From the original fefw-recomp
+
+- Runs natively on Windows, with no emulator in between; Linux and Steam Deck through Proton
 - 60 or 120 FPS modes, any output resolution, render scale and a temporal upscaler
+- DLSS, FSR 3 and XeSS upscaling, and DLSS or FSR 3 frame generation, with files you supply
 - Ultrawide (21:9, 32:9 or any wider shape): a wider view with the menus and HUD kept at 16:9 in the centre
 - Windowed, borderless or fullscreen
-- Keyboard or any controller, with matching button prompts
+- Keyboard, mouse (through the game's own mouse controls) or any controller, with matching button prompts
 - An in-game settings overlay (**F1**)
-- A launcher that sets everything up from your dump, with nothing else to install
+- Every game language, DLC from your own dump, RomFS mods and code mods as DLLs
+- Movies, volume up to 200%, and the game's photos saved to an album folder
+- A launcher that sets everything up from your dump, with nothing else to install, and updates itself
+
+### Added in Obelisk Chamber
+
+**Inside the game's own menus**
+- **Recomp Options**: a screen under **+ > System**, built from the game's own Settings widgets, with Display, Graphics, Frame Rate
+  and Audio tabs. Most settings apply to the running game (render scale, shadow resolution, quality, frame rate, dynamic resolution
+  and more); **-** restores the defaults after a confirmation
+- **Save slots**: several saves side by side, chosen from the game's own Continue, New Game and Delete Save entries on the title
+- **Save and Load lists** in the + menu: one press saves or loads a slot through the game's own prompts, and each row shows the
+  chapter and play time
+- **DLC / Mods** on the title screen: every mod listed on a RomFS tab and an ExeFS tab, switched on or off there
+
+**Picture and performance**
+- A DLSS model choice that applies live
+- Dynamic resolution that lowers the render size only where it gains frame rate
+- Coarser shading for chosen draws, and options to skip or spread repeated compute work
+- A **Handheld** quality choice (the console's handheld reductions) beside Docked
+- Speakers: stereo or 5.1
+- Lower runtime overhead in three hot paths, and a corrected input-delay figure in the overlay
+- Movies decoded with dav1d's own assembly and a deeper decode buffer, so the 1440p cutscenes stay in step with their sound
+- Ultrawide: framed panels, the Stats / roster frame and the World Map picture keep their 16:9 shape while dims and full-screen
+  backgrounds still cover the whole screen, and the world / quest map's location dots and routes stay on the map
+
+**Mods**
+- Code patches (`.ips`, IPS32, `.pchtxt`) from a mod's `exefs` folder are applied when the game is built
+- DLL mods can bring hook sites of their own (`exefs/*.sites`, added by Set up; contributed by ranbinrang-rgb), give the game
+  functions to call, edit the game's data files as they are loaded, and open a list screen in the game's style (mod interface
+  versions 2 to 4)
+
+**Launcher**
+- Redesigned after the game's menus: a title-style list, framed panels with tabs, a help box and key help; keyboard and controller
+  navigation as in the game
+- An option to draw the launcher with the game's own menu art, read from your dump when the launcher starts (nothing is copied)
+- New name and icon
+
+**For people who build it themselves**
+- Profile-guided optimisation and ThinLTO for the game code, a profile-guided runtime, and per-PC build tuning
+  (`build_options.json`); see [docs/PGO.md](docs/PGO.md)
+- A CI build of the runtime on every change
+
+> [!NOTE]
+> This fork was made for personal use, and its releases are play-tests: they have had one person's testing on one PC, and updates
+> come when the maintainer wants something for their own play. The redesigned launcher is new and has had little testing.
+>
+> A release is a general build that runs on any supported processor. If you know how to build from source, that is the better
+> option: profile-guided optimisation, ThinLTO and tuning for your own CPU are available there. See
+> [docs/BUILDING.md](docs/BUILDING.md) and [docs/PGO.md](docs/PGO.md).
 
 ## Requirements
 
 - Windows 10 or 11, 64-bit
-- A 64-bit CPU with SSE4.2 and POPCNT: an Intel Core i3 / i5 / i7 (2008) or newer, or an AMD FX (2011) / Ryzen or newer. Setup builds the game for your processor: CPUs with FMA3 (Intel Haswell 2013, AMD Piledriver 2012 and newer) get the faster build, older ones such as Sandy Bridge, Ivy Bridge and Xeon E5 v1 / v2 a compatible build that plays the same, a little slower. Older processors (Core 2, AMD Phenom) are not supported; Setup and `fefw.exe` say so instead of crashing
+- A 64-bit CPU with SSE4.2 and POPCNT: an Intel Core i3 / i5 / i7 (2008) or newer, or an AMD FX (2011) / Ryzen or newer. Setup builds the game for your processor: CPUs with FMA3 (Intel Haswell 2013, AMD Piledriver 2012 and newer) get the faster build, older ones such as Sandy Bridge, Ivy Bridge and Xeon E5 v1 / v2 a compatible build that plays the same, a little slower. Older processors (Core 2, AMD Phenom) are not supported; Setup and `ObeliskChamber.exe` say so instead of crashing
 - A GPU with Vulkan 1.3 and an up-to-date driver
 - 16 GB of RAM and about 30 GB of free disk space
 - Your own decrypted dump of the game at update **131072**, in one of these forms:
@@ -41,8 +116,8 @@ software and draws with Vulkan. It is not an emulator.
 
 ## Getting started
 
-1. Download `fefw-recomp-<version>-win64.zip` from the [Releases](../../releases) page and extract it to its own folder.
-2. Run `fefw-launcher.exe`.
+1. Download `ObeliskChamber-<version>-win64.zip` from the [Releases](../../releases) page and extract it to its own folder.
+2. Run `ObeliskChamber-launcher.exe`.
 3. On **Setup**, choose your dump folder (or **.nup** file) and press **Set up**. The launcher checks your files, builds the game on
    your PC and prepares the shaders. The first setup takes a while; you can **Pause** it and continue later.
 4. Press **Play**.
@@ -51,7 +126,7 @@ Your saves are in the `save\` folder next to the launcher.
 
 ### Linux and Steam Deck
 
-Download `fefw-recomp-<version>-linux-x64.tar.gz` instead, extract it and run `fefw-launcher.AppImage`; the steps are the same. The
+Download `ObeliskChamber-<version>-linux-x64.tar.gz` instead, extract it and run `ObeliskChamber-launcher.AppImage`; the steps are the same. The
 game runs through Proton: Play needs Steam with a Proton installed, [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher) (`umu-run`) or Wine, or
 press **Add to Steam** on the Play page and start it from Steam (also in the Steam Deck's Game Mode). After an update, run Set up in
 the launcher (Desktop Mode on a Deck) before playing from Steam.
@@ -71,14 +146,14 @@ language and uses English when the game has no translation for it. The change ap
 
 NVIDIA's files cannot be shipped here, so DLSS stays off until you add them. Take them from NVIDIA's
 [Streamline SDK](https://github.com/NVIDIAGameWorks/Streamline) (v2.x, the `bin/x64` folder of the release, not the development one) and
-put these four files in a folder named `upscalers\streamline` next to `fefw-launcher.exe`:
+put these four files in a folder named `upscalers\streamline` next to `ObeliskChamber-launcher.exe`:
 
 ```
 sl.interposer.dll   sl.common.dll   sl.dlss.dll   nvngx_dlss.dll
 ```
 
 Then choose **DLSS** (or **Automatic**, which picks DLSS when the files and an RTX GPU are there) as the Upscaler in **Settings**, and
-restart the game. `fefw.log` says `Streamline ... started` and `DLSS (Streamline)` when it works. The folder can be somewhere else:
+restart the game. `ObeliskChamber.log` says `Streamline ... started` and `DLSS (Streamline)` when it works. The folder can be somewhere else:
 set it under **Settings > Picture > DLSS (Streamline) folder**.
 
 For DLSS frame generation (RTX 40 or newer, with Windows' hardware-accelerated GPU scheduling on) add five more files from the same
@@ -86,15 +161,15 @@ folder: `sl.dlss_g.dll`, `sl.reflex.dll`, `sl.pcl.dll`, `nvngx_dlssg.dll` and `N
 
 On an RTX 30 or older GPU, NVIDIA's own files refuse frame generation. Some community mods replace some of these files to run it on
 older GPUs. We don't ship or support them. If you use one, put its files in the same `upscalers\streamline` folder, replacing the
-originals as the mod says, and set `frame_gen_any_gpu = 1` under `[dlss]` in `fefw.ini` in the run folder (or the environment
+originals as the mod says, and set `frame_gen_any_gpu = 1` under `[dlss]` in `ObeliskChamber.ini` in the run folder (or the environment
 variable `NXRT_DLSS_FRAME_GEN_ANY_GPU=1`). The game then no longer turns frame generation off just because Streamline says the GPU
-is too old, and the mod's own answer decides. `fefw.log` shows the outcome on its `framegen` and `dlss` lines.
+is too old, and the mod's own answer decides. `ObeliskChamber.log` shows the outcome on its `framegen` and `dlss` lines.
 
 ### FSR 3 (any GPU)
 
 FSR 3 needs AMD's signed FidelityFX files, which you download from AMD's
 [FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) repository. Put them in `upscalers\fsr` next to
-`fefw-launcher.exe` (create the folder):
+`ObeliskChamber-launcher.exe` (create the folder):
 
 ```
 amd_fidelityfx_upscaler_vk.dll   amd_fidelityfx_loader_vk.dll   FSR 3 upscaling (Kits/FidelityFX/signedbin of tag v2.4.0)
@@ -105,14 +180,14 @@ Choose **AMD FSR 3 upscaling** as the Upscaler and/or **AMD FSR 3 frame generati
 the game. Frame generation adds one generated frame between two real ones; the HUD and text are taken from the real frames, so they
 stay sharp. It works best with VSync off on a 120 Hz or faster display: with VSync on the game renders at most half the refresh
 rate, and on a display slower than twice the game's frame rate generation pauses. **Settings > Picture > FSR 3 (AMD) folder** shows
-whether the files are found, and can point to another folder. If a file is missing, `fefw.log` names it and the game carries on with TAAU (or without frame generation).
+whether the files are found, and can point to another folder. If a file is missing, `ObeliskChamber.log` names it and the game carries on with TAAU (or without frame generation).
 
 ### XeSS (any GPU, best on Intel Arc)
 
 XeSS needs Intel's `libxess.dll`, which you download from `bin/` of the [XeSS SDK 3.0.2](https://github.com/intel/xess/releases/tag/v3.0.2)
-release. Put it in `upscalers\xess` next to `fefw-launcher.exe` (create the folder). It also needs the
+release. Put it in `upscalers\xess` next to `ObeliskChamber-launcher.exe` (create the folder). It also needs the
 [Microsoft Visual C++ 2015-2022 Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe). Then choose **Intel XeSS** as the
-Upscaler in **Settings** and restart the game. If the file or the runtime is missing, `fefw.log` says so and the game uses TAAU.
+Upscaler in **Settings** and restart the game. If the file or the runtime is missing, `ObeliskChamber.log` says so and the game uses TAAU.
 
 ### Keyboard and controller
 
@@ -196,7 +271,12 @@ an instruction this port hooks makes Set up stop and name it.
 
 Code mods made for this port can also be DLLs in the mod's `exefs\` folder (`mods\<mod name>\exefs\<mod>.dll`), so one mod folder can
 carry an emulator's patches and this port's DLL side by side. They load when the game starts and can hook the game at the sites it was
-built with. A DLL runs with the same rights as the game: only install mods you trust. `[fs] dll_mods = false` in `fefw.ini` turns them
+built with. A DLL mod that needs hook sites of its own lists them in a `.sites` file beside it (see
+[mod_api.h](runtime/include/nxrt/mod_api.h)); like exefs patches, they are added when the game is built, so press **Set up** after
+installing, updating or removing such a mod (switching it on or off in the Mods menu needs only a restart; a mod whose sites
+the current build lacks is named on screen at start and marked "needs Set up" in the menu). From interface version 2 a mod can also give the game functions of its own to call, which is what adding an entry to one
+of the game's menus needs, and from version 3 a mod can change the game's data files as they are loaded (add rows to a table,
+for example), so two mods that add to the same file no longer overwrite each other. From version 4 a mod can show a list screen in the game's own style, with a value per row that left and right change. A DLL runs with the same rights as the game: only install mods you trust. `[fs] dll_mods = false` in `ObeliskChamber.ini` turns them
 off. Writing one: [runtime/include/nxrt/mod_api.h](runtime/include/nxrt/mod_api.h).
 
 Mods can be switched on and off in the game: the title screen's DLC entry reads **DLC / Mods** and lists every mod folder on a RomFS
@@ -213,21 +293,68 @@ Extract the new zip to a new folder, copy your `save\` folder (and `mods\`, if y
   base game.
 - **Setup stopped or failed**: press **Set up** again to continue where it stopped. **Open full log** on the Setup page shows what
   went wrong.
-- **The game closes or freezes**: look at `fefw.log` in the launcher's folder, and update your GPU driver.
+- **The game closes or freezes**: look at `ObeliskChamber.log` in the launcher's folder, and update your GPU driver.
 
 ## Reporting problems
 
-Open an [issue](../../issues) with `fefw.log`, your GPU, driver and Windows version, and the release you used. Please do not attach
+Open an [issue](../../issues) with `ObeliskChamber.log`, your GPU, driver and Windows version, and the release you used. Please do not attach
 game files or anything made from them.
 
 ## Building from source
 
-See [docs/BUILDING.md](docs/BUILDING.md). Contributions are welcome.
+See [docs/BUILDING.md](docs/BUILDING.md).
+
+## Contributing
+
+Contributions are welcome: open a pull request against `master`, or an [issue](../../issues) first for anything large.
+
+- Keep game files and anything made from them (dumps, extracted assets, decompiled code) out of the repository and out of pull
+  requests. Addresses, offsets and hook code are fine.
+- Don't copy code from other mods or ports unless its licence allows it; credit what you build on, as the [Credits](#credits) do.
+- A change to `recomp/games/fefw/main.sites` or to the code converter needs a new **Set up** to take effect; say so in the pull
+  request.
+- Describe what you tested and on what hardware. Releases get one person's testing on one PC, so a second setup helps.
+- Code mods that don't need a change here are best shared on their own (see [Mods](#mods) and
+  [mod_api.h](runtime/include/nxrt/mod_api.h)).
 
 ## Credits
 
 This project stands on the work of others. Thank you.
 
+**The original**
+- **[fefw-recomp](https://github.com/Goldoire/fefw-recomp) by Goldoire**: the port itself, about 98% of what is here. See
+  [Where this comes from](#where-this-comes-from).
+- Its contributors: **Stellarznith** (DualSense haptic feedback, the F1 upscaler and frame generation status, translations),
+  **Aidan Kinzett** (the Linux package and starting the game through Steam's Proton or Wine, a clearer Set up error),
+  **Paulius (Kompas9)** (ultrawide fixes, torch shadows, storage-buffer reads, Vulkan layer handling), **ranbinrang-rgb** (code mods
+  as DLLs) and **Abubakar-ux** (the frame rate counter with frame generation), and everyone who filed issues and helped test it.
+
+**[Kompas9's fork](https://github.com/Kompas9/fefw-recomp) by Paulius (Kompas9)**
+
+After the original's last release, Paulius kept improving it in a fork of their own. These changes were brought in here with their
+commits, so the history shows them as the author:
+- Faster game code: the condition flags are a local of each translated function instead of four fields written to memory (the
+  game's code is about 18% smaller; it takes effect at the next Set up).
+- The game's alpha test (the hardware stage that hides see-through pixels, used by a dissolve effect) applied as a shader variant
+  (`[nvn] alpha_test`).
+- A shader fix for integer textures (four shaders that were read as float images, issue #89 of the original).
+- GPU statistics counters written once per address (`[nvn] stat_counters`), saving render-thread time each frame.
+- A D-pad for the tutorial's page-turn glyphs with a PlayStation or Xbox pad (`[fefw] pager_dpad`).
+- The launcher names the Streamline files in the DLSS folder that the game does not use (NVIDIA's NGX can load stray ones).
+- astc-encoder 5.7.1, and much quieter logs: no unknown-NVN-function list, Streamline plugin notes, libvpx line or RGB565 texture
+  warnings at every start.
+
+**This fork**
+- **[xinthefreefallxai](https://github.com/xinthefreefallxai)**: maintainer. Chose what to build, directed the work, tested every
+  change on real hardware and made the releases.
+- **Claude** (Anthropic's AI model): wrote the maintainer's code changes under that direction.
+- **ranbinrang-rgb**: mods that bring their own hook sites (`exefs/*.sites`, lifted by Set up), with the checks around them: a
+  mod's sites are kept while it is switched off, hooks are checked against the lifted list, the Mods menu names mods that need
+  Set up, and Set up warns about midhook sites where the condition flags are still live.
+- The [Fortune's Weave decompilation project](https://code.vexcited.com/decompile/fefw): its function and class names helped find the
+  game's menu code. No code from it is used.
+
+**What the original was built on, and what both use**
 - [nxrecomp](https://github.com/drakolordx7/nxrecomp) by drakolordx7: the recompiler this is built on.
 - [pokopia-recomp](https://github.com/drakolordx7/pokopia-recomp) (drakolordx7) and [featureJosh/pokopia-recomp](https://github.com/featureJosh/pokopia-recomp)
   (featureJosh): the runtime, tools and launcher this project started from (GPL-3.0).
@@ -241,6 +368,7 @@ This project stands on the work of others. Thank you.
   (GPL); libnx (ISC); LLVM libc++abi (Apache-2.0 with LLVM exceptions).
 - [Hookshot](https://github.com/NotRexed/Hookshot) (GPL-3.0) and SkyboundTotk: the RomFS mod folder layout and rules followed here, so
   mods work the same in both.
+- [nup](https://github.com/a55uka/nup) by a55uka: the `.nup` package format the launcher can read.
 - [zbic](https://github.com/kinnay/zbic) by Yannik Marchand (GPLv2; installed by pip at setup, not included here): ZBIC decompression.
 - [dav1d](https://code.videolan.org/videolan/dav1d) (BSD-2-Clause), [libvpx](https://chromium.googlesource.com/webm/libvpx) (BSD-3-Clause),
   [Zstandard](https://github.com/facebook/zstd) (BSD), [SDL3](https://github.com/libsdl-org/SDL) (zlib), volk, VulkanMemoryAllocator, Dear ImGui (MIT),
