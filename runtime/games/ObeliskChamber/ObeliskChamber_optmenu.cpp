@@ -582,8 +582,31 @@ void list_prev(::Ctx* c) { list_side(c, -1); }
 // The prompt is the newest process over the list when one is first seen, and "gone" means that process left its parent's children. Waiting
 // for nothing at all to be over the list is not enough: the game's Save entry makes a helper process next to its prompt (0x16da940), and
 // when the prompt is cancelled that helper can stay, which left the list deaf to A and B until it was opened again (seen on a PC).
-enum { kPromptNone, kPromptWaiting, kPromptSeen };
+// After the prompt's process is gone the guard can still be needed: the game's report window (game::menu::ReportDialog, the window of the
+// Save and Continue prompts) can stay up a little longer, and after a save a last step is closed with A. That A also reached the row, which
+// asked again 0.86 s after the save (seen on a PC). So while a report window is still registered the guard stays on (kPromptWindow).
+// The game keeps one global pointer to "the" report window, [main+0x22a10c0]: a new window is stored there only when it is empty
+// (0x16da9f4 and 0x16daf54: ldr x9, [x8,#0xc0]; cbnz x9; str ..., [x8,#0xc0]) and its destructor clears it. A prompt made while the old
+// window is still there is not registered, so its Yes / No / B close the old one and nothing ever closes the new one: it stayed on screen
+// and the field camera no longer turned (seen on a PC). 0x1618dc0(window) closes a window once it has finished opening (what the
+// Continue prompt's Yes and No call); it does nothing before that.
+enum { kPromptNone, kPromptWaiting, kPromptSeen, kPromptWindow };
 int g_prompt = kPromptNone, g_prompt_ignored = 0;
+constexpr uint64_t kReportWindow = 0x22a10c0, kReportClose = 0x1618dc0;
+constexpr uint64_t kReportStores[] = {0x16da9f4, 0x16daf54};
+constexpr auto kWindowWait = std::chrono::seconds(5);      // then the window is closed by hand ...
+constexpr auto kWindowGiveUp = std::chrono::seconds(8);    // ... and past this the guard lifts whatever is left
+constexpr auto kWindowRefuse = std::chrono::seconds(10);   // A on a row is refused while a window is up, for at most this long
+bool g_report_ok = false;          // the global is where it was expected (optmenu_install)
+uint64_t g_report_at_open = 0;     // the window there when the list was opened: not one of the list's prompts
+uint64_t g_report_seen = 0;        // list_acall: the window A was last refused for, and since when
+std::chrono::steady_clock::time_point g_report_seen_at;
+// The report window that is up and is not the one there when the list was opened; 0 if none (or if the global could not be checked).
+uint64_t report_window() {
+    uint64_t w = 0;
+    if (!g_report_ok || !rd(g_base + kReportWindow, &w) || w == g_report_at_open) return 0;
+    return w;
+}
 uint64_t g_prompt_proc = 0;      // the prompt's process (kPromptSeen)
 uint64_t g_list_menu = 0;        // the pick list's menu (build_ours)
 // A menu whose item answered 12 notes it (menu +0x160, the handler 0x17141e0) and reads no directions while that is set (its tick,
@@ -621,6 +644,22 @@ int procs_over(uint64_t menu, uint64_t* out, int cap) {
     }
     return n;
 }
+// The prompt is gone: the list takes its buttons again, unless a report window is still up (kPromptWindow, timed from now).
+bool prompt_ended(::Ctx* c, uint64_t menu) {
+    if (report_window()) {
+        g_prompt = kPromptWindow;
+        g_prompt_at = std::chrono::steady_clock::now();
+        static bool told = false;
+        if (!told) {
+            told = true;
+            NXLOG_I(kTag, "pick list: the prompt is gone but its report window is still up: the list waits for it");
+        }
+        return false;
+    }
+    g_prompt = kPromptNone;
+    list_resume(c, menu);
+    return true;
+}
 bool under_prompt(::Ctx* c, uint64_t item) {
     if (g_prompt == kPromptNone) return false;
     uint64_t menu = 0, over[16] = {};
@@ -631,13 +670,32 @@ bool under_prompt(::Ctx* c, uint64_t item) {
             g_prompt = kPromptSeen;
             g_prompt_proc = over[0];
         } else if (std::chrono::steady_clock::now() - g_prompt_at > std::chrono::seconds(2)) {
+            prompt_ended(c, menu);
+        }
+    } else if (g_prompt == kPromptWindow) {
+        const uint64_t w = report_window();
+        const auto waited = std::chrono::steady_clock::now() - g_prompt_at;
+        if (!w) {
             g_prompt = kPromptNone;
             list_resume(c, menu);
+        } else if (waited > kWindowGiveUp) {
+            g_prompt = kPromptNone;
+            list_resume(c, menu);
+            NXLOG_W(kTag, "pick list: a report window (0x%llx) stayed up %lld s after its prompt and did not close: the list takes A and B again",
+                    static_cast<unsigned long long>(w), static_cast<long long>(kWindowGiveUp.count()));
+        } else if (waited > kWindowWait) {
+            // Its prompt is answered and gone, so nothing else will close it. The close does nothing until the window has finished
+            // opening, and nothing while it is already closing, so it is asked every frame until the window is gone.
+            static bool told = false;
+            if (!told) {
+                told = true;
+                NXLOG_I(kTag, "pick list: a report window is still up %lld s after its prompt: closing it",
+                        static_cast<long long>(kWindowWait.count()));
+            }
+            call(c, g_base + kReportClose, {w});
         }
     } else if (std::find(over, over + n, g_prompt_proc) == over + n) {
-        g_prompt = kPromptNone;
-        list_resume(c, menu);
-        if (n > 0) {
+        if (prompt_ended(c, menu) && n > 0) {
             static bool told = false;
             if (!told) {
                 told = true;
@@ -658,6 +716,21 @@ void list_acall(::Ctx* c) {
     if (under_prompt(c, item)) {      // the A that answered a prompt over the list
         c->x[0] = 0;
         return;
+    }
+    // A report window still up (the guard gave up on it, or it came from elsewhere): a prompt made now would not be registered and would
+    // stay on screen, so the row is refused (the game's "no" sound) until it is gone, for at most kWindowRefuse per window.
+    if (const uint64_t w = report_window()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (w != g_report_seen) g_report_seen = w, g_report_seen_at = now;
+        if (now - g_report_seen_at < kWindowRefuse) {
+            static bool told = false;
+            if (!told) {
+                told = true;
+                NXLOG_I(kTag, "pick list: A on a row while a report window is still up: refused until it is gone");
+            }
+            c->x[0] = 1;
+            return;
+        }
     }
     // the answer is the row's: 3 closes the list, 13 keeps it open and redraws the row's value, anything else goes to the menu as it is
     const uint32_t answer = g_list.pick ? g_list.pick(c, i) : kClose;
@@ -903,7 +976,11 @@ void build_ours(::Ctx* c, uint64_t menu, int screen) {
     if (!rd(g_base + kHeapGot, &heap_var) || !rd(heap_var, &heap) || !heap) return;
     const bool list = screen == kScreenList;
     const int rows = list ? std::clamp(g_list.count, 0, kListMax) : kRowCount;
-    if (list) g_prompt = kPromptNone, g_list_menu = menu;
+    if (list) {
+        g_prompt = kPromptNone, g_list_menu = menu;
+        g_report_at_open = 0, g_report_seen = 0;
+        if (g_report_ok) rd(g_base + kReportWindow, &g_report_at_open);
+    }
     if (list) std::fill(std::begin(g_list_seen), std::end(g_list_seen), g_list_gen);
     else
         for (int i = 0; i < kRowCount; ++i) g_entries[i].page = row_shown(kRows[i]) ? static_cast<uint8_t>(kRows[i].page) : 0xff;   // 0xff: on no tab
@@ -1040,6 +1117,17 @@ void optmenu_frame() {
         g_yvt[2 + kFSlotCloneNew] = hle_register("fefw.optmenu.reset_yes_clone_new", reset_yes_clone_new);
         g_yvt[2 + kFSlotCloneAt] = hle_register("fefw.optmenu.reset_yes_clone_at", reset_yes_clone_at);
     } else NXLOG_W(kTag, "the Options screen's reset prompt is not where it was expected: minus does nothing on Recomp Options");
+    // The report window's global: checked through the two places that store it (see kPromptWindow); without it the list guard works as
+    // before (no wait for the window, no refusal, no close).
+    g_report_ok = fn_lookup(g_base + kReportClose) && mem::is_mapped(g_base + kReportWindow, 8);
+    for (uint64_t at : kReportStores) {
+        uint32_t w[8] = {};
+        bool store = false;
+        if (!rd(g_base + at, &w)) g_report_ok = false;
+        for (int i = 2; i < 8; ++i) store = store || (w[i] & 0xffffffe0u) == 0xf9006100u;   // str xN, [x8,#0xc0]
+        g_report_ok = g_report_ok && w[0] == 0xf9406109u && (w[1] & 0xff00001fu) == 0xb5000009u && store;   // ldr x9, [x8,#0xc0]; cbnz x9
+    }
+    if (!g_report_ok) NXLOG_W(kTag, "the game's report window is not where it was expected: the save list does not wait for it");
     g_ivt2[2 + kISlotNext] = hle_register("fefw.optmenu.list_next", list_next);
     g_ivt2[2 + kISlotPrev] = hle_register("fefw.optmenu.list_prev", list_prev);
     services::modapi::set_list_opener(mod_open_list);

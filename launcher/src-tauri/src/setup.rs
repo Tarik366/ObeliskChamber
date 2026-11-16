@@ -6,7 +6,8 @@
 //! Steps, in order (each is skipped when its output is already there and current, so Set up after a pause continues):
 //!   python   tools/.venv with recomp/requirements.txt (uv)
 //!   exefs    game/dump/exefs: the dump's NSOs, `main` written uncompressed (tools/nso/prepare_exefs.py)
-//!   lift     work/build/fefw/fefw_*.lib: lift and compile the six modules (recomp/scripts/build_game.cmd fefw)
+//!   lift     work/build/fefw/fefw_*.lib: lift and compile the six modules (recomp/scripts/build_game.cmd fefw), main with main.sites
+//!            plus the installed mods' exefs/*.sites (lift_sites_file); not done while a mod has a site the build lacks
 //!   textures tools/textures/third_party: astc-encoder and bc7enc sources for the ASTC to BC7 transcoder (fetch_third_party.ps1)
 //!   exe      game-build/fefw/build/release/ObeliskChamber.exe (game-build/scripts/build_fefw.ps1)
 //!   harness  the shader translator (tools/shaders: Ryujinx sources staged, dotnet build)
@@ -129,16 +130,213 @@ impl Paths {
     }
 }
 
-/// The last `fefw_build.py --check`: (done.json mtime and size, ObeliskChamber.exe mtime) -> current. The tools do not change while the
-/// launcher runs and a finished build rewrites done.json, so one Python run per finished build is enough.
-type CheckKey = (Option<std::time::SystemTime>, u64, Option<std::time::SystemTime>);
+// ---- hook sites of mods (mods/<name>/exefs/*.sites; game-build/release/fefw_build.py collect_mod_sites) ------------------------------
+// A code mod can hook only an instruction main was lifted with as a site; a mod that needs its own lists them in exefs/*.sites. The
+// release package's build stamp covers them (fefw_build.py --check). In a checkout, Set up lifts main with main.sites plus these
+// sites (FEFW_SITES, recomp/games/fefw/CMakeLists.txt), and the lift step is not done while a mod has a site the build lacks.
+
+const MOD_SITE_KINDS: [&str; 3] = ["inline", "midhook", "entryhook"];
+
+/// A site list: its @nsobid (upper case, "" when it has none) and its (kind, address) lines.
+fn read_site_list(path: &Path) -> Option<(String, Vec<(String, u64)>)> {
+    let text = fs::read_to_string(path).ok()?;
+    let mut bid = String::new();
+    let mut sites = Vec::new();
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("");
+        let mut t = line.split_whitespace();
+        let (Some(kind), Some(arg)) = (t.next(), t.next()) else { continue };
+        if kind.eq_ignore_ascii_case("@nsobid") {
+            bid = arg.to_ascii_uppercase();
+        } else if let Ok(a) = u64::from_str_radix(arg.trim_start_matches("0x").trim_start_matches("0X"), 16) {
+            sites.push((kind.to_string(), a));
+        }
+    }
+    Some((bid, sites))
+}
+
+/// A mod's build ID against main's: a prefix of it, the rest zeros (as fefw_build.py bid_matches and the runtime's same_build).
+fn same_build(mod_bid: &str, main_bid: &str) -> bool {
+    if main_bid.is_empty() {
+        return true;
+    }
+    let mut full = main_bid.to_ascii_uppercase();
+    while full.len() < 64 {
+        full.push('0');
+    }
+    let t = mod_bid.to_ascii_uppercase();
+    t.len() >= 16 && t.len() <= 64 && full.starts_with(&t) && full[t.len()..].chars().all(|c| c == '0')
+}
+
+/// main's build ID (NSO header +0x40, 32 bytes) as hex and its code (.text memory offset and size, header +0x14 / +0x18); None
+/// when the file cannot be read.
+fn main_header(p: &Paths) -> Option<(String, u64, u64)> {
+    let mut head = [0u8; 0x60];
+    fs::File::open(p.plain_exefs().join("main")).and_then(|mut f| f.read_exact(&mut head)).ok()?;
+    let word = |o: usize| u32::from_le_bytes([head[o], head[o + 1], head[o + 2], head[o + 3]]) as u64;
+    Some((head[0x40..0x60].iter().map(|b| format!("{b:02X}")).collect(), word(0x14), word(0x18)))
+}
+
+/// One site a mod adds: `<mod>/exefs/<file>:<line>`, kind, guest address.
+type ModSite = (String, String, u64);
+
+const MAIN_BASE: u64 = 0x71_0000_0000;
+const NEXT_MODULE: u64 = 0x75_0000_0000;
+
+/// The installed mods' sites for this game build, checked as game-build/release/fefw_build.py collect_mod_sites and write_sites
+/// check them, with the same messages: a kind a mod cannot add, a line that is not `<kind> <hex address>`, a file without
+/// @nsobid, an address that is not an instruction in main's code. The first problem is the error. A mod's exefs/ folder counts
+/// whether or not its mod.ini switches exefs off (fefw_build.py keeps those sites too, so switching a mod needs no Set up).
+fn mod_sites(p: &Paths) -> Result<Vec<ModSite>, String> {
+    let header = main_header(p);
+    let bid = header.as_ref().map(|h| h.0.clone()).unwrap_or_default();
+    let mut out = Vec::new();
+    let Ok(rd) = fs::read_dir(p.mods()) else { return Ok(out) };
+    let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|d| d.join("exefs").is_dir()).collect();
+    dirs.sort_by_key(|d| d.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+    for d in dirs {
+        let name = d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let Ok(files) = fs::read_dir(d.join("exefs")) else { continue };
+        let mut files: Vec<PathBuf> = files
+            .flatten()
+            .map(|e| e.path())
+            .filter(|f| f.is_file() && f.extension().map_or(false, |x| x.eq_ignore_ascii_case("sites")))
+            .collect();
+        files.sort_by_key(|f| f.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+        for f in files {
+            let file = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let where_ = format!("{name}/exefs/{file}");
+            let Ok(text) = fs::read_to_string(&f) else { continue };
+            let mut mbid: Option<String> = None;
+            let mut recs = Vec::new();
+            for (i, line) in text.trim_start_matches('\u{feff}').lines().enumerate() {
+                let ln = i + 1;
+                let t: Vec<&str> = line.split('#').next().unwrap_or("").split_whitespace().collect();
+                if t.is_empty() {
+                    continue;
+                }
+                if t[0].eq_ignore_ascii_case("@nsobid") {
+                    if t.len() != 2 {
+                        return Err(format!("{where_}:{ln}: @nsobid takes one build ID"));
+                    }
+                    mbid = Some(t[1].to_string());
+                    continue;
+                }
+                if !MOD_SITE_KINDS.contains(&t[0]) {
+                    return Err(format!("{where_}:{ln}: \"{}\" is not a site a mod can add ({})", t[0], MOD_SITE_KINDS.join(", ")));
+                }
+                let addr = (t.len() == 2)
+                    .then(|| u64::from_str_radix(t[1].trim_start_matches("0x").trim_start_matches("0X"), 16).ok())
+                    .flatten()
+                    .ok_or_else(|| format!("{where_}:{ln}: expected \"<kind> <guest address in hex>\""))?;
+                recs.push((ln, t[0].to_string(), addr));
+            }
+            let Some(mbid) = mbid else {
+                return Err(format!("{where_} has no @nsobid line (the build ID of the main its sites are for)"));
+            };
+            if !same_build(&mbid, &bid) {
+                continue; // another version of the game
+            }
+            for (ln, kind, addr) in recs {
+                if addr % 4 != 0 || !(MAIN_BASE..NEXT_MODULE).contains(&addr) {
+                    return Err(format!("{where_}:{ln}: 0x{addr:x} is not an instruction address in main (main is at 0x{MAIN_BASE:x})"));
+                }
+                if let Some((_, text_off, text_size)) = &header {
+                    let off = addr - MAIN_BASE;
+                    if !(*text_off..text_off + text_size).contains(&off) {
+                        return Err(format!("{where_}:{ln}: 0x{addr:x} is outside main's code"));
+                    }
+                }
+                out.push((format!("{where_}:{ln}"), kind, addr));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The mod folder of a site's `<mod>/exefs/<file>:<line>`.
+fn site_mod(where_: &str) -> &str {
+    where_.split('/').next().unwrap_or(where_)
+}
+
+/// Mods with a hook site that the built ObeliskChamber.exe was not lifted with (its ObeliskChamber.sites next to it). Empty when the
+/// exe or its list is not there yet (the lift / exe steps are not done then anyway), or when a .sites file has an error (reported
+/// by mod_sites_problem instead).
+pub fn mods_missing_sites(p: &Paths) -> Vec<String> {
+    let Some((_, lifted)) = read_site_list(&p.exe().with_extension("sites")) else { return vec![] };
+    let lifted: std::collections::HashSet<(String, u64)> = lifted.into_iter().collect();
+    let mut names: Vec<String> = Vec::new();
+    for (where_, kind, a) in mod_sites(p).unwrap_or_default() {
+        let name = site_mod(&where_).to_string();
+        if !lifted.contains(&(kind, a)) && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// A problem in the mods' .sites files (the first one), as the release script reports it.
+fn mod_sites_problem(p: &Paths) -> Option<String> {
+    mod_sites(p).err()
+}
+
+/// Checkout: the site list the lift uses, main.sites plus the mods' sites (written only when it changes, since the lift depends on
+/// the file). Without mod sites it is main.sites itself. A problem in a .sites file stops Set up with its message.
+fn lift_sites_file(p: &Paths) -> Result<PathBuf, String> {
+    let own_path = p.repo.join("recomp").join("games").join("fefw").join("main.sites");
+    let extra = mod_sites(p)?;
+    if extra.is_empty() {
+        return Ok(own_path);
+    }
+    let own = fs::read_to_string(&own_path).map_err(|e| format!("cannot read {}: {e}", own_path.display()))?;
+    let have: std::collections::HashSet<(String, u64)> = read_site_list(&own_path).map(|(_, s)| s).unwrap_or_default().into_iter().collect();
+    let mut text = own.trim_end().to_string() + "\n\n# ---- added by mods (exefs/*.sites)\n";
+    let mut seen = std::collections::HashSet::new();
+    for (where_, kind, a) in extra {
+        if have.contains(&(kind.clone(), a)) || !seen.insert((kind.clone(), a)) {
+            continue;
+        }
+        text += &format!("{kind} 0x{a:x}   # {where_}\n");
+    }
+    let out = p.libs().join("main_with_mods.sites");
+    if fs::read_to_string(&out).ok().as_deref() != Some(text.as_str()) {
+        fs::create_dir_all(p.libs()).map_err(|e| e.to_string())?;
+        fs::write(&out, text).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+    }
+    Ok(out)
+}
+
+/// The mods' exefs files (names, sizes, times): part of the release package's check key, so installing, updating or removing a code
+/// mod while the launcher runs asks fefw_build.py --check again.
+fn mods_exefs_stamp(p: &Paths) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    if let Ok(rd) = fs::read_dir(p.mods()) {
+        let mut files: Vec<(PathBuf, u64, Option<std::time::SystemTime>)> = Vec::new();
+        for d in rd.flatten() {
+            for f in fs::read_dir(d.path().join("exefs")).into_iter().flatten().flatten() {
+                if let Ok(m) = f.metadata() {
+                    files.push((f.path(), m.len(), m.modified().ok()));
+                }
+            }
+        }
+        files.sort();
+        files.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// The last `fefw_build.py --check`: (done.json mtime and size, ObeliskChamber.exe mtime, the mods' exefs files) -> current. The tools
+/// do not change while the launcher runs and a finished build rewrites done.json, so one Python run per finished build and mod set is
+/// enough.
+type CheckKey = (Option<std::time::SystemTime>, u64, Option<std::time::SystemTime>, u64);
 static BUILD_CHECK: Mutex<Option<(CheckKey, bool)>> = Mutex::new(None);
 
 fn package_build_ok(p: &Paths) -> bool {
     let Some(tools) = &p.package else { return false };
     let done = p.in_game(&["build", "done.json"]);
     let (Ok(dm), true) = (fs::metadata(&done), p.exe().is_file()) else { return false };
-    let key: CheckKey = (dm.modified().ok(), dm.len(), mtime(&p.exe()));
+    let key: CheckKey = (dm.modified().ok(), dm.len(), mtime(&p.exe()), mods_exefs_stamp(p));
     if let Some((k, b)) = BUILD_CHECK.lock().unwrap().as_ref() {
         if *k == key {
             return *b;
@@ -270,7 +468,7 @@ pub fn steps(p: &Paths, running: Option<&str>) -> Vec<StepState> {
         "build" => package_build_ok(p),
         "python" => python_ok(p),
         "exefs" => exefs_ok(p),
-        "lift" => libs_ok(p),
+        "lift" => libs_ok(p) && mod_sites_problem(p).is_none() && mods_missing_sites(p).is_empty(),
         "exe" => exe_ok(p),
         "textures" => textures_ok(p),
         "harness" => p.harness().is_file() && shaders_ok(p),
@@ -284,9 +482,22 @@ pub fn steps(p: &Paths, running: Option<&str>) -> Vec<StepState> {
             id: id.to_string(),
             title: title.to_string(),
             state: if running == Some(*id) { "running".into() } else if done(id) { "done".into() } else { "todo".into() },
-            detail: String::new(),
+            detail: if *id == "lift" && p.package.is_none() { missing_sites_detail(p) } else { String::new() },
         })
         .collect()
+}
+
+/// The lift step's note: a problem in a mod's .sites file, or the mods with hook sites the build lacks.
+fn missing_sites_detail(p: &Paths) -> String {
+    if let Some(problem) = mod_sites_problem(p) {
+        return problem;
+    }
+    let names = mods_missing_sites(p);
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!("new hook sites from {}: Set up lifts the game with them", names.join(", "))
+    }
 }
 
 pub fn complete(p: &Paths) -> bool {
@@ -718,9 +929,10 @@ fn run_steps(r: &Runner, p: &Paths, jobs: usize) -> Result<bool, String> {
             return Ok(false);
         }
     }
-    if !libs_ok(p) {
+    if !libs_ok(p) || mod_sites_problem(p).is_some() || !mods_missing_sites(p).is_empty() {
+        let sites = lift_sites_file(p)?;
         let mut c = Command::new("cmd.exe");
-        c.args(["/d", "/c", "recomp\\scripts\\build_game.cmd", "fefw"]).env("NX_JOBS", jobs.to_string());
+        c.args(["/d", "/c", "recomp\\scripts\\build_game.cmd", "fefw"]).env("NX_JOBS", jobs.to_string()).env("FEFW_SITES", &sites);
         if !r.run("lift", "Recompiling the game code (an hour or more the first time)", c, repo)? {
             return Ok(false);
         }
@@ -805,5 +1017,88 @@ mod tests {
         assert_eq!(ninja_progress("[ 3/ 9] x"), Some((3, 9)));
         assert_eq!(ninja_progress("no"), None);
         assert_eq!(tool_progress("scan: 5 10"), Some((5, 10)));
+    }
+
+    #[test]
+    fn mod_build_ids() {
+        let main = "DB93B0125F4850601D61C3EDDE012F8EB2ECFE77000000000000000000000000";
+        assert!(same_build("DB93B0125F4850601D61C3EDDE012F8EB2ECFE77", main));
+        assert!(same_build("db93b0125f4850601d61c3edde012f8eb2ecfe77", main));
+        assert!(!same_build("DB93B0125F485060", main)); // the digits after it are not all zeros
+        assert!(!same_build("DB93B012", main)); // too short to name a build
+        assert!(!same_build("45EAC7636FFC32C7", main));
+        assert!(same_build("45EAC7636FFC32C7", "")); // no build ID known: assume it
+    }
+
+    /// A run folder with one code mod: its sites are reported until the exe's site list has them, and the lift's list adds them.
+    #[test]
+    fn mod_sites_against_the_build() {
+        let root = std::env::temp_dir().join(format!("fefw-sites-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        let game = root.join("play");
+        let p = Paths {
+            repo: repo.clone(),
+            exefs: root.join("dump"),
+            romfs: root.join("dump"),
+            dlc: None,
+            game_dir: game.clone(),
+            package: None,
+        };
+        // main's NSO header with its build ID at +0x40
+        let mut nso = vec![0u8; 0x60];
+        nso[0x18..0x1C].copy_from_slice(&0x0200_0000u32.to_le_bytes()); // .text size: main's code covers every site below
+        nso[0x40..0x54].copy_from_slice(&[0xDB, 0x93, 0xB0, 0x12, 0x5F, 0x48, 0x50, 0x60, 0x1D, 0x61, 0xC3, 0xED, 0xDE, 0x01, 0x2F, 0x8E, 0xB2, 0xEC, 0xFE, 0x77]);
+        fs::create_dir_all(p.plain_exefs()).unwrap();
+        fs::write(p.plain_exefs().join("main"), &nso).unwrap();
+        let own = repo.join("recomp").join("games").join("fefw").join("main.sites");
+        fs::create_dir_all(own.parent().unwrap()).unwrap();
+        fs::write(&own, "# hook sites of main\ninline 0x71007bf1c0\nmidhook 0x710188bd30\n").unwrap();
+        let ex = game.join("mods").join("Some_Mod").join("exefs");
+        fs::create_dir_all(&ex).unwrap();
+        fs::write(
+            ex.join("some.sites"),
+            "@nsobid DB93B0125F4850601D61C3EDDE012F8EB2ECFE77\nmidhook 0x710188bd30   # in main.sites already\nmidhook 0x71016f21f4\n",
+        )
+        .unwrap();
+        // a mod for another game build is left out
+        let other = game.join("mods").join("Old_Mod").join("exefs");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("old.sites"), "@nsobid 45EAC7636FFC32C7\nmidhook 0x7100001000\n").unwrap();
+
+        assert_eq!(mod_sites(&p).unwrap().len(), 2); // the two midhooks of Some_Mod
+        // no exe list yet: nothing to compare with
+        assert!(mods_missing_sites(&p).is_empty());
+        let list = p.exe().with_extension("sites");
+        fs::create_dir_all(list.parent().unwrap()).unwrap();
+        fs::write(&list, fs::read_to_string(&own).unwrap()).unwrap();
+        assert_eq!(mods_missing_sites(&p), vec!["Some_Mod".to_string()]);
+
+        let lift = lift_sites_file(&p).unwrap();
+        let text = fs::read_to_string(&lift).unwrap();
+        assert!(text.contains("midhook 0x71016f21f4   # Some_Mod/exefs/some.sites:3"));
+        assert_eq!(text.matches("0x710188bd30").count(), 1); // not added twice
+        assert!(!text.contains("0x7100001000"));
+        // the exe built from that list: nothing missing any more
+        fs::write(&list, &text).unwrap();
+        assert!(mods_missing_sites(&p).is_empty());
+
+        // problems are reported with the release script's messages, and the lift step is not done meanwhile
+        let bad = ex.join("bad.sites");
+        let check = |text: &str, want: &str| {
+            fs::write(&bad, text).unwrap();
+            let e = mod_sites(&p).unwrap_err();
+            assert!(e.contains(want), "{e}");
+            assert_eq!(missing_sites_detail(&p), e);
+        };
+        check("@nsobid DB93B0125F4850601D61C3EDDE012F8EB2ECFE77\npatch 0x7100000000\n", "Some_Mod/exefs/bad.sites:2: \"patch\" is not a site a mod can add");
+        check("@nsobid DB93B0125F4850601D61C3EDDE012F8EB2ECFE77\nmidhook zz\n", "bad.sites:2: expected \"<kind> <guest address in hex>\"");
+        check("midhook 0x71016f21f4\n", "Some_Mod/exefs/bad.sites has no @nsobid line");
+        check("@nsobid DB93B0125F4850601D61C3EDDE012F8EB2ECFE77\nmidhook 0x71016f21f2\n", "is not an instruction address in main");
+        // main's code: .text at memory offset 0 with 0x1000 bytes (NSO header +0x14 / +0x18)
+        nso[0x18..0x1C].copy_from_slice(&0x1000u32.to_le_bytes());
+        fs::write(p.plain_exefs().join("main"), &nso).unwrap();
+        check("@nsobid DB93B0125F4850601D61C3EDDE012F8EB2ECFE77\nmidhook 0x7100002000\n", "0x7100002000 is outside main's code");
+        let _ = fs::remove_dir_all(&root);
     }
 }

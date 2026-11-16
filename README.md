@@ -30,14 +30,15 @@ over the full history (third-party folders and lock files left out, 401,708 line
 | The original fefw-recomp: Goldoire | 386,730 | 96.3% |
 | The original fefw-recomp: its contributors (Stellarznith, Aidan Kinzett, Paulius / Kompas9, ranbinrang-rgb, Abubakar-ux) | 6,140 | 1.5% |
 | [Kompas9's fork](https://github.com/Kompas9/fefw-recomp) (Paulius), changes brought in here | 490 | 0.1% |
+| [Stephen Jayakar's fork](https://github.com/stephenjayakar/fefw-recomp), changes brought in here | 3,884 | 1.0% |
 | Obelisk Chamber (this fork): its maintainer | 7,971 | 2.0% |
 | Obelisk Chamber (this fork): contributors (ranbinrang-rgb) | 377 | 0.1% |
 
-So about **97.8% of the code is the original's, 0.1% comes from Kompas9's fork and about 2.1% was added here**. By commits, not
-counting merges, the split is 84 from the original, 17 from Kompas9's fork, 84 from this fork's maintainer and 5 from its
-contributors. Lines are a rough measure of
+So about **97.0% of the code is the original's, 0.1% comes from Kompas9's fork, 1.0% from Stephen Jayakar's fork and about 2.1%
+was added here**. By commits, not counting merges, the split is 84 from the original, 17 from Kompas9's fork, 51 from Stephen
+Jayakar's fork, 100 from this fork's maintainer and 5 from its contributors. Lines are a rough measure of
 work, and the original in turn builds on the projects named under [Credits](#credits) (its first commit holds their code too, so
-their share is inside the 97.9%).
+their share is inside the 97.0%).
 
 The maintainer's changes in this fork were written with Claude (Anthropic's AI model), directed and tested by the maintainer.
 
@@ -343,6 +344,39 @@ commits, so the history shows them as the author:
 - The launcher names the Streamline files in the DLSS folder that the game does not use (NVIDIA's NGX can load stray ones).
 - astc-encoder 5.7.1, and much quieter logs: no unknown-NVN-function list, Streamline plugin notes, libvpx line or RGB565 texture
   warnings at every start.
+
+**[Stephen Jayakar's fork](https://github.com/stephenjayakar/fefw-recomp) by Stephen Jayakar**
+
+Stephen Jayakar measured and fixed the original's hitches and slow frames in a performance fork of his own (GPL-3.0). His changes
+are brought in here with his commits, so the history shows him as the author, and each commit names the commit it came from:
+- An import freeze finds its pages from the heap's page table instead of VirtualQuery, which held the write tracker's lock for up
+  to 85 ms: the 140 to 500 ms gameplay hitches next to a memory pool import (`[memory] freeze_table`).
+- The same for the commit check of a pool slab.
+- The next 64 MiB pool-copy chunk is made ahead on a worker thread instead of on the render thread at area arrivals
+  (`[nvn] mirror_spare`).
+- A GPU untile of a first upload no longer imports a 64 MiB pool chunk on the render thread (`[nvn] untile_import`), and texture
+  stand-ins encode fewer levels (`[nvn] standin_encode_px`).
+- The render thread's Vulkan calls made by a second thread (`[nvn] replay_threads = 2`, off by default), handed over in batches,
+  and a small cache of pipeline layouts (`[nvn] layout_cache`). On his PC the busiest street's render-thread work went from 16.8 to
+  about 14 ms a frame.
+- Fewer GPU barriers, each behind its own setting and off by default: dispatches that share nothing run side by side
+  (`[nvn] dispatch_barriers`), the game's own barriers kept only where they guard something (`[nvn] game_barriers`), runs of
+  uniform-buffer updates with two barriers instead of two each (`[nvn] batch_ubo_updates`), feedback copies of only the sampled
+  levels (`[nvn] feedback_levels`) and a read-only depth pass kept open (`[nvn] depth_ro_sticky`), with `[prof] gpu_stats` to
+  measure them. On his PC at 4K the GPU time per frame went from 15.1 to 10.9 ms with all five on.
+- Less CPU spent between threads: the system-call counters kept per thread instead of in shared memory every thread writes,
+  imports resolved in one lookup, command lists that reserve their size up front, a cheaper starvation guard
+  (`[sched] starvation_lean`) and short spins before sleeping for chosen game threads only (`[kernel] spin_threads`).
+- Texture streaming for area loads: textures without their data yet are drawn with quick stand-ins while background jobs read or
+  make the real data (`[nvn] tex_async = standin`; the render thread opens no cache file), the stand-ins are cheaper and smaller
+  (`standin_copy`, `standin_rows`), uploads go through a persistent staging ring (`staging_ring_mb`), and an area's first uploads
+  are spread over frames (`pool_upload_ms`, 24 ms a frame while a backlog streams in). On his PC the load-in frame after a menu
+  went from 3.8 s to about 0.3 s.
+- Fewer first-use stalls from shaders: the whole shader pack is kept in memory so no shader file is read during play
+  (`[nvn] shader_pack_all`, `shader_pack_resident`), compute pipelines are built ahead on background threads
+  (`compute_async = prebuild`), draws no longer wait for a pipeline still being built (`prewarm_wait = false`), two extra threads
+  take urgent jobs (`gpl_burst_threads`), and the background build threads scale with the CPU. On his PC, with empty shader
+  caches, the worst battle frame went from 142 to 44 ms.
 
 **This fork**
 - **[xinthefreefallxai](https://github.com/xinthefreefallxai)**: maintainer. Chose what to build, directed the work, tested every

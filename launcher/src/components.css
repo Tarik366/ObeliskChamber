@@ -312,6 +312,7 @@ progress::-webkit-progress-value { background: linear-gradient(90deg, var(--colo
 .steps li.done { color: var(--color-ok); }
 .steps li.running { color: var(--color-warn); }
 .steps li svg { width: 16px; height: 16px; flex: none; }
+.steps li .step-detail { color: var(--color-warn); font-size: 0.9em; }
 .logbox { background: var(--color-surface-sunken); border: 1px solid var(--color-border);
   font-family: var(--font-mono); font-size: var(--font-size-xs); letter-spacing: 0; line-height: 1.45; height: 200px; overflow: auto;
   padding: var(--space-2) var(--space-3); white-space: pre-wrap; word-break: break-all; color: var(--color-text-dim); }
